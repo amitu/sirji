@@ -159,6 +159,39 @@ is, when an app must distinguish "unknown name" from "no live holder". Not befor
   findable; an identity must not be, or anyone on the LAN could enumerate every
   identity we present and the unlinkability is gone.
 
+- **What actually blocks this machine, diagnosed properly.** A **Fortinet
+  FortiGate** intercepts TLS: the certificate for `aps1-1.relay.n0.iroh.link` is
+  issued by `O=Fortinet, CN=FG2H0GT925909113`, self-signed, and **absent from the
+  Mac's trust store** (`verify error 19`). So nothing can validate it — not iroh,
+  not curl. `platform-verifier` is still the right default (it respects corporate
+  CAs, custom roots, anything the machine is configured to trust, exactly as a
+  browser does) but it cannot rescue a machine whose trust store lacks the
+  intercepting CA. That is a misconfigured endpoint, not a design problem: a
+  managed laptop normally has its own CA installed.
+
+  Interception here is **selective by host**. `aps1-1.relay.n0.iroh.link` is
+  intercepted; `use1-1.relay.iroh.network` answers 200 untouched. And **plain DNS
+  works** — TXT lookups resolve fine. So on this very network, a relay on a
+  non-intercepted host would connect, and the `_sirji.<domain>` TXT path is viable.
+
+  **The design consequence: relay and discovery endpoints must be configurable.**
+  Depending on one organisation's infrastructure is a single point of failure for
+  a substrate whose whole premise is not having one. A user behind a hostile
+  network, a censored one, or one that simply blocks n0 should be able to point at
+  a relay and a pkarr server they choose — iroh supports `RelayMode::Custom`, so
+  this is configuration, not new mechanism. Not yet built.
+
+  **The second consequence: persist where a peer was.** We already record their
+  handshake keys; recording their full transport address — relay URL and direct
+  addresses, refreshed on every contact — means a known peer stays reachable with
+  no discovery service at all. Discovery is then only for the *first* contact and
+  for peers that moved. Not yet built.
+
+- **mDNS does not cross networks**, and cannot. It is link-local multicast, so it
+  covers a LAN and nothing beyond it. A laptop reaching a device at home needs
+  discovery to learn *where*, and a relay or hole-punch to get packets there —
+  which is precisely what the two items above are for.
+
 - **`Endpoint::online()` must not gate accepting.** It waits for discovery to
   publish, which may never happen; accepting works regardless.
 

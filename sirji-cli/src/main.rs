@@ -145,6 +145,13 @@ fn render(response: Response) -> Result<()> {
                 let state = if a.retired { "retired" } else { "current" };
                 let bound = if a.bound { "bound" } else { "NOT BOUND" };
                 println!("address  {:<10} {state:<8} {bound:<10} {}", a.alias, a.key);
+                for r in &a.relays {
+                    let state = if r.connected { "connected" } else { "DOWN" };
+                    match &r.error {
+                        Some(e) => println!("  relay  {state:<10} {} — {e}", r.url),
+                        None => println!("  relay  {state:<10} {}", r.url),
+                    }
+                }
             }
             println!("peers    {peers} established, {pending} pending");
         }

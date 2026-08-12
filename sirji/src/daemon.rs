@@ -14,7 +14,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 
 use crate::config::{HandshakeKey, Network, Peer};
-use crate::proto::{AddressInfo, Hello, Invite, PeerInfo, Request, Response, Welcome};
+use crate::proto::{AddressInfo, Hello, Invite, PeerInfo, RelayInfo, Request, Response, Welcome};
 use crate::{Keystore, id52};
 
 pub const SOCKET: &str = "sirji.sock";
@@ -65,6 +65,27 @@ impl Daemon {
 
     pub fn home(&self) -> &Path {
         &self.home
+    }
+
+    /// Home relay state for one bound address.
+    fn relays_of(&self, alias: &str) -> Vec<RelayInfo> {
+        use iroh::Watcher;
+        self.bound
+            .iter()
+            .find(|(a, _)| a == alias)
+            .map(|(_, endpoint)| {
+                endpoint
+                    .home_relay_status()
+                    .get()
+                    .into_iter()
+                    .map(|status| RelayInfo {
+                        url: status.url().to_string(),
+                        connected: status.is_connected(),
+                        error: status.last_error().map(|e| e.to_string()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Where we are reachable right now, as socket addresses.
@@ -252,6 +273,7 @@ impl Daemon {
                             key: k.key.clone(),
                             retired: k.retired,
                             bound: self.bound.iter().any(|(a, _)| *a == k.alias),
+                            relays: self.relays_of(&k.alias),
                         })
                         .collect(),
                     peers: net.peers.iter().filter(|p| !p.is_pending()).count(),

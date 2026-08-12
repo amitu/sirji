@@ -34,6 +34,7 @@ pub const ALPN: &[u8] = b"/sirji/1";
 pub async fn bind(secret: SecretKey) -> Result<Endpoint> {
     Endpoint::builder(presets::N0)
         .secret_key(secret)
+        .ca_tls_config(ca_config())
         // Every lookup iroh offers, not just one. The N0 preset brings pkarr
         // publish/resolve and DNS, both of which need reachable n0 infrastructure;
         // mDNS needs nothing but the local network, so a LAN — or two sirjis on
@@ -43,6 +44,26 @@ pub async fn bind(secret: SecretKey) -> Result<Endpoint> {
         .bind()
         .await
         .map_err(|e| anyhow::anyhow!("binding endpoint: {e}"))
+}
+
+/// Verify TLS against the **operating system's** trust store, not a compiled-in
+/// copy of Mozilla's roots.
+///
+/// This is what lets sirji work on a network that intercepts TLS — a corporate
+/// laptop, a school, a country. Such a proxy presents its own certificate, signed
+/// by a CA that is installed in the OS store (or the user's browser would not work
+/// either) but is absent from any bundled list. With embedded roots, iroh cannot
+/// reach a relay *or* publish to pkarr, and the machine is left with mDNS and
+/// nothing else.
+///
+/// What the proxy gains by being trusted here is only the discovery and relay
+/// metadata: which id52 is publishing, and that two endpoints exchange packets.
+/// **It cannot read peer traffic.** Peer connections authenticate by ed25519
+/// keypair, not by certificate authority, so there is no CA an interceptor could
+/// substitute — a relay forwards bytes it cannot decrypt, and so does the proxy
+/// carrying them.
+fn ca_config() -> iroh::tls::CaTlsConfig {
+    iroh::tls::CaTlsConfig::system()
 }
 
 /// mDNS lookup. `advertise` says whether to announce ourselves as well as listen:
@@ -64,6 +85,7 @@ fn mdns(advertise: bool) -> iroh_mdns_address_lookup::MdnsAddressLookupBuilder {
 pub async fn bind_dialer(secret: SecretKey) -> Result<Endpoint> {
     Endpoint::builder(presets::N0)
         .secret_key(secret)
+        .ca_tls_config(ca_config())
         // Resolve, but **do not advertise**. A peer key is an identity, and
         // broadcasting one on the local network would undo the unlinkability the
         // whole design rests on: anyone on the LAN could enumerate every identity

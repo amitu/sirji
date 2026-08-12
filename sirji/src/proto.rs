@@ -130,6 +130,20 @@ pub struct AddressInfo {
     pub key: String,
     pub retired: bool,
     pub bound: bool,
+    /// Home relays, and whether we are actually connected to each.
+    ///
+    /// This is the answer to "am I reachable from outside this network?" — mDNS
+    /// covers a LAN, but reaching a peer across the internet needs a relay for
+    /// hole-punching and fallback, and discovery to have published where we are.
+    #[serde(default)]
+    pub relays: Vec<RelayInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayInfo {
+    pub url: String,
+    pub connected: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
