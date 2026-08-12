@@ -1,0 +1,17 @@
+[package]
+name = "sirji-cli"
+description = "the sirji command line: operator commands, and the harness the milestones are demonstrated through"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "sirji"
+path = "src/main.rs"
+
+[dependencies]
+sirji.workspace = true
+anyhow.workspace = true
+tokio.workspace = true

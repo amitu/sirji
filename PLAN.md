@@ -127,6 +127,26 @@ is, when an app must distinguish "unknown name" from "no live holder". Not befor
 
 ## Milestones
 
+### Findings from M1 (iroh 1.0.3, measured 12 Aug 2026)
+
+- **The design's known/unknown dispatch works at the transport layer, unaided.**
+  `Connection::remote_id()` is the dialer's key, available before any application
+  byte moves. A listener classifies a connection by looking it up — no handshake,
+  no mode byte, no negotiation. This was the load-bearing assumption and it holds.
+- **iroh renames from the 0.x era.** `EndpointId` (an alias for `PublicKey`), not
+  `NodeId`; `EndpointAddr`, not `NodeAddr`; `Endpoint::builder(presets::N0)`.
+- **iroh renders keys as 64 hex characters**, so id52 is genuinely our own layer.
+  `sirji::id52` is the only place the two forms meet, and a test asserts they
+  differ so the boundary cannot quietly collapse.
+- **Discovery is unusable on the current dev machine.** pkarr publish/resolve runs
+  over HTTPS to `dns.iroh.link`, which fails TLS verification here — an
+  intercepting proxy. `Endpoint::online()` therefore never resolves, so it must
+  not gate accepting, and **dial-by-id52-alone cannot be exercised in this
+  environment**. Direct-address dialling (`<id52>@<host>:<port>`) was added: it
+  proves the wire, and it says *where* without ever saying *who* — the key still
+  authenticates the connection. Dial-by-key remains untested and is the first
+  thing to check somewhere with clean egress.
+
 ### M1 — the wire
 
 Two processes, two endpoints, dial by node id, echo a byte over an ALPN.

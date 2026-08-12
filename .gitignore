@@ -8,3 +8,6 @@ keys/
 *.private-key
 
 .DS_Store
+
+# demo/scratch keystores
+/.sirji
