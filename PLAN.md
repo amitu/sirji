@@ -34,32 +34,38 @@ wrong, so they come before the milestones that depend on them.
 
 ### Spike A — what does an endpoint cost, and can they share network state?
 
-**Why this is now a much easier question.** An earlier draft required one key per
-relationship, which meant one *endpoint* per relationship — several hundred sockets,
-hole-punchers, relay connections and republished discovery records on one host, all
-rediscovering the same network behind the same NAT. That is gone: DESIGN.md now
-listens on **handshake keys**, of which there are as many as the user chose to mint
-— a handful for a person, one for a public service. So the question is no longer
-"can iroh survive 500 endpoints" but "what does a handful cost, and what is the
-ceiling if someone wants one key per peer?"
+**Why this is now a much easier question.** An earlier draft made every identity a
+listening endpoint — several hundred sockets, hole-punchers, relay connections and
+republished discovery records on one host, all rediscovering the same network
+behind the same NAT. That is gone: DESIGN.md listens only on **handshake keys**
+(a handful per sirji), while per-relationship **peer keys are dialled from and
+never listened on.**
+
+So the question is no longer "can iroh survive 500 endpoints" but **"what does an
+outbound-only identity cost?"** — because that is the one that scales with
+relationship count.
 
 **The spike.** Bind 1, 5, 20, 100 endpoints in one process, with and without a
 relay. Measure: file descriptors, RSS, relay connections established, idle CPU and
 network, and time to bind. Then two questions that decide how far the privacy dial
 can be turned:
 
-1. **Can endpoints share a socket, netcheck, or relay connection?** Relays route by
+1. **What does an endpoint used only for dialling cost?** It needs no published
+   discovery record and no inbound reachability; whether iroh still holds a home
+   relay and republishes for it is the question. **This is the one that matters** —
+   it is multiplied by relationship count.
+2. **Can endpoints share a socket, netcheck, or relay connection?** Relays route by
    node id, so one relay connection serving several identities is plausible in
-   principle. If iroh exposes it, one-key-per-peer becomes affordable at any scale
-   and the ceiling disappears.
-2. **Is an outbound-only endpoint cheaper than a listening one?** A key used only to
-   dial may not need a published discovery record or a home relay. If so, the
-   caller side of the dial can stay per-peer even where the listening side does not.
+   principle. If iroh exposes it, the cost of peer keys collapses regardless.
+3. **Can a dial from key K be made without binding a long-lived endpoint at all** —
+   bind, dial, keep the connection, drop the endpoint's discovery machinery? An
+   established QUIC connection does not need its originator to stay discoverable.
 
-**What the answer changes.** Nothing about the design — the door model works at any
-cost. It sets the **documented guidance**: how many keys a person can mint before
-their sirji suffers, which is a number the docs should state rather than leave
-users to discover. Record the measurement in DESIGN.md § Identity.
+**What the answer changes.** Nothing about the design — address and identity are
+separate whatever the numbers say. It sets **documented guidance**: how many
+relationships a sirji carries comfortably, and whether peer-key endpoints should be
+bound lazily on first dial rather than at startup. Record the measurement in
+DESIGN.md § Identity.
 
 ### Spike B — you cannot encrypt to an ed25519 key
 
@@ -224,20 +230,25 @@ the CLI needed to get here, and no more.
 
 ### M7 — bootstrap
 
-The four ways a relationship begins, in the order they are useful:
+The ways a relationship begins and is kept reachable, in the order they are
+useful:
 
-1. **The handshake-key exchange** — pick which of our keys they will know us by,
-   dial theirs, both sides write their `[[peer]]` entry. Nothing is minted during
-   the exchange and there is no re-key step.
-2. **The single-recipient invite** — mint a key for one person, record a pending
-   `[[peer]]`, send the key; they dial it and the relationship completes with
-   nothing to approve.
-3. **DNS** — `_sirji.<domain>` TXT lookup returning one or more handshake keys.
+1. **The handshake-key exchange** — mint a peer key, dial their address, both sides
+   write their `[[peer]]`. The listener distinguishes first contact from an
+   existing relationship purely by whether the dialling key is known.
+2. **The two-key invite** — an address plus the peer key minted for them, which
+   doubles as proof they are the invitee.
+3. **DNS** — `_sirji.<domain>` TXT lookup returning one or more handshake keys,
+   recorded on the `[[peer]]` so the address can be refetched later.
 4. **Introduction** — a handshake key passed on with a vouch.
+5. **Rotation and draining** — publish a new address, keep the old one bound,
+   hand the current one to peers that arrive on the retired key, and unbind only
+   once no `[[peer]]` names it in `reached_on`.
 
 **Done when:** two sirjis on two machines that have never met complete a
-handshake, write mirror-image `[[peer]]` entries, and then reach each other's
-named services by alias — with the handshake key never used again.
+handshake, write mirror-image `[[peer]]` entries, and reach each other's named
+services by alias. Then rotate one side's address and watch the other pick it up
+on its next dial, with `sirji key retire` refusing until it has.
 
 ---
 
@@ -255,12 +266,15 @@ introduction chains and trust assertions; per-requester device addresses.
    two NATs, and the whole reachability story rests on hole-punching and relays.
    M1 must be tested across two networks, or M6 will pass locally and fail in
    reality.
-2. **A key reused where the user meant it to be private.** Now that distribution is
-   the privacy control, quietly reusing a handshake key where a fresh one was
-   intended silently widens a correlation set — invisible in testing. `sirji net
-   check` should report each key's peer count, so "this key is shared by 12 peers"
-   is visible rather than inferred.
-3. **Endpoint cost setting an undocumented ceiling** (Spike A). Not a design risk
+2. **A peer key reused across two relationships.** This is the one failure that
+   silently destroys the central property, and it is invisible in testing because
+   everything still works. Every mint must assert the key is new, and `sirji net
+   check` must fail loudly if any `mine` appears in two `[[peer]]` entries.
+3. **Retiring an address too early.** Unbinding a handshake key while a `[[peer]]`
+   still names it in `reached_on` strands that peer — recoverable only via `dns`,
+   and not at all without it. `sirji key retire` must refuse while any peer still
+   points at it, rather than warning.
+4. **Endpoint cost setting an undocumented ceiling** (Spike A). Not a design risk
    any more, but users need a stated number.
 4. **iroh API drift.** Pin the version at M1 and record it; do not track a moving
    target while the substrate is being written.

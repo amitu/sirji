@@ -4,10 +4,11 @@ An open-source peer-to-peer network substrate — identity, relationships, and
 authenticated connections — shipped as a Rust crate that an app embeds to become
 a sirji device.
 
-Every actor is an ed25519 keypair. You mint as many as you like and hand each one
-to whomever you choose — **a key's distribution set is its correlation set**, so
-unlinkability is a dial you set per relationship rather than a fixed property. One
-key per person means nobody can correlate you at all. Connections are QUIC over
+Every actor is an ed25519 keypair, and there are two kinds. A **handshake key** is
+an address: what you listen on and hand out, rotatable, shared with whoever you
+choose. A **peer key** is an identity: minted per relationship, shown to exactly
+one peer, and only ever dialled *from* — so no two peers can correlate you, no
+matter how many share your address. Connections are QUIC over
 [iroh](https://github.com/n0-computer/iroh), mutually authenticated by keypair,
 NAT-traversed and relay-backed, so location never matters.
 
