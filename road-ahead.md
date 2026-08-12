@@ -64,8 +64,9 @@ targeted effort defeats what it provides — a seized device can be imaged, a ho
 node can be served process, traffic timing can be correlated — and promising
 otherwise would be dishonest.
 
-What it tries to make expensive is **mass** correlation. Pairwise identity defeats
-trivial cross-relationship linking. The absence of a directory means there is no
+What it tries to make expensive is **mass** correlation. Handing each circle its
+own key defeats trivial cross-relationship linking, and one key per person defeats
+it entirely. The absence of a directory means there is no
 namespace to enumerate. No intermediary sits at a point where everyone's traffic
 can be tapped at once.
 

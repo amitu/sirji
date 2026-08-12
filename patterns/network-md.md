@@ -12,7 +12,7 @@ only.
 
 ## The problem it solves
 
-sirji is deliberately pairwise and thin. It resolves an incoming id52 to an
+sirji is deliberately thin. It resolves an incoming id52 to an
 **alias** and hands that over in the sealed ticket — and that is *all* it hands
 over. **It has no groups, no tags, and no visibility rules**: a group is not a
 cryptographic fact, it is a name someone made up, so it has no place in the store

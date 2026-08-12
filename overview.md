@@ -69,9 +69,12 @@ real. The build order is in [DESIGN.md](DESIGN.md) § Build order.
 
 Five commitments that explain most of the specific decisions:
 
-1. **Pairwise identity, always.** No keypair is ever shown to two peers. Costs
-   almost nothing, and makes cross-relationship correlation structurally
-   impossible rather than merely discouraged.
+1. **A key's distribution set is its correlation set.** You mint handshake keys and
+   hand each to whomever you choose; whoever shares one can correlate each other,
+   and nobody else can. So unlinkability is a **dial the user sets per
+   relationship**, not a property the protocol asserts on their behalf — one key
+   per person is the strongest setting, one key for everyone the cheapest. An
+   earlier draft made the strongest setting mandatory and could not afford it.
 2. **The substrate holds no policy.** It identifies; it does not authorize.
    Possession of a handshake key is the only gate, and every *may this person do
    this* question belongs to the app.

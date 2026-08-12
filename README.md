@@ -4,9 +4,10 @@ An open-source peer-to-peer network substrate — identity, relationships, and
 authenticated connections — shipped as a Rust crate that an app embeds to become
 a sirji device.
 
-Every actor is an ed25519 keypair. Identity is **pairwise**: a fresh keypair per
-relationship, so the id52 a peer holds for you is an edge, not a node, and nothing
-two peers hold can be correlated. Connections are QUIC over
+Every actor is an ed25519 keypair. You mint as many as you like and hand each one
+to whomever you choose — **a key's distribution set is its correlation set**, so
+unlinkability is a dial you set per relationship rather than a fixed property. One
+key per person means nobody can correlate you at all. Connections are QUIC over
 [iroh](https://github.com/n0-computer/iroh), mutually authenticated by keypair,
 NAT-traversed and relay-backed, so location never matters.
 
