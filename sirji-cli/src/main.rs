@@ -1,26 +1,32 @@
-//! `sirji` — operator commands, and the harness the milestones are demonstrated
-//! through.
+//! `sirji` — the command line.
 //!
-//! Deliberately hand-rolled argument matching for now; `clap` arrives when there
-//! is enough surface to justify it.
+//! Does no networking of its own: everything that touches the network is asked of
+//! the daemon over the unix socket in `$SIRJI_HOME`. Filesystem permission on that
+//! socket is the authorization, which is why this channel has no keys and no
+//! policy on it.
+//!
+//! Hand-rolled argument matching for now; `clap` arrives when there is enough
+//! surface to justify it.
 
 use anyhow::{Result, bail};
+use sirji::daemon;
+use sirji::proto::{Invite, Request, Response};
 use sirji::{Keystore, id52};
 
 const USAGE: &str = "\
 sirji — peer-to-peer network substrate
 
-  sirji key new                 mint a key, print its id52
+  sirji init                    create $SIRJI_HOME with its first handshake key
+  sirji status                  what the daemon is listening as
+  sirji address new <alias>     mint another handshake key
+  sirji invite <alias>          mint an identity for someone; print an invite
+  sirji accept <alias> <invite> complete an invite and pair
+  sirji peers                   every relationship, pending or established
+  sirji net check               validate network.toml without a daemon
   sirji key ls                  list the keystore, verifying every entry
-  sirji listen [<id52>]         listen on a key (minting one if not given)
-  sirji dial <target> [message]  dial an address and echo a message off it
 
-A <target> is an id52, optionally with a direct socket address appended as
-`<id52>@<host>:<port>`. Plain id52 needs discovery to be reachable; the direct
-form dials the wire straight and is how the transport is tested where discovery
-is unavailable.
-
-The keystore lives at $SIRJI_HOME/keys (default ~/.sirji/keys).";
+The daemon is `sirjid`. An instance is its $SIRJI_HOME (default ~/.sirji), so two
+sirjis on one machine are two directories and nothing else.";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -31,12 +37,21 @@ fn main() -> Result<()> {
             println!("{USAGE}");
             Ok(())
         }
-        ["key", "new"] => key_new(),
+        ["init"] => init(),
         ["key", "ls"] => key_ls(),
-        ["listen"] => rt()?.block_on(listen(None)),
-        ["listen", key] => rt()?.block_on(listen(Some(key))),
-        ["dial", address] => rt()?.block_on(dial(address, "hello from sirji")),
-        ["dial", address, message @ ..] => rt()?.block_on(dial(address, &message.join(" "))),
+        ["net", "check"] => net_check(),
+        ["status"] => ask(Request::Status),
+        ["peers"] => ask(Request::Peers),
+        ["address", "new", alias] => ask(Request::NewAddress {
+            alias: (*alias).to_string(),
+        }),
+        ["invite", alias] => ask(Request::Invite {
+            alias: (*alias).to_string(),
+        }),
+        ["accept", alias, invite] => ask(Request::Accept {
+            alias: (*alias).to_string(),
+            invite: Invite::decode(invite)?,
+        }),
         _ => {
             eprintln!("{USAGE}");
             bail!("unrecognised command: {}", args.join(" "));
@@ -44,15 +59,12 @@ fn main() -> Result<()> {
     }
 }
 
-fn rt() -> Result<tokio::runtime::Runtime> {
-    Ok(tokio::runtime::Runtime::new()?)
-}
-
-fn key_new() -> Result<()> {
-    let store = Keystore::open()?;
-    let key = store.generate()?;
-    println!("{}", id52::encode(&key));
-    eprintln!("written to {}", store.dir().display());
+fn init() -> Result<()> {
+    let home = sirji::keystore::home()?;
+    let (home, key) = daemon::init(&home)?;
+    println!("sirji home {}", home.display());
+    println!("handshake key `default` {key}");
+    println!("\nstart it with `sirjid`.");
     Ok(())
 }
 
@@ -68,104 +80,91 @@ fn key_ls() -> Result<()> {
         store.secret(key)?;
         println!("{}", id52::encode(key));
     }
-    eprintln!("{} key(s) in {}, all verified", keys.len(), store.dir().display());
+    eprintln!("{} key(s), all verified", keys.len());
     Ok(())
 }
 
-async fn listen(key: Option<&str>) -> Result<()> {
-    let store = Keystore::open()?;
-    let key = match key {
-        Some(text) => id52::decode(text)?,
-        None => store.generate()?,
-    };
-    let secret = store.secret(&key)?;
+fn net_check() -> Result<()> {
+    let home = sirji::keystore::home()?;
+    let net = sirji::Network::load(&home)?;
+    net.check()?;
 
-    let endpoint = sirji::bind(secret).await?;
-    let me = id52::encode(&endpoint.id());
-    println!("listening as {me}");
-
-    // Deliberately not gated on `online()`: that waits for discovery to publish,
-    // which needs reachable pkarr infrastructure. Accepting works without it, and
-    // a direct address is enough to prove the wire.
-    for addr in endpoint.bound_sockets() {
-        println!("  bound   {addr}");
+    println!("{} — ok", sirji::Network::path_in(&home).display());
+    for hk in &net.handshake_keys {
+        let used_by = net
+            .peers
+            .iter()
+            .filter(|p| p.reached_on.as_deref() == Some(hk.alias.as_str()))
+            .count();
+        let state = if hk.retired { "retired" } else { "current" };
+        println!(
+            "  address {:<12} {state:<8} {used_by} peer(s) reached here",
+            hk.alias
+        );
     }
-    // Sockets bind to the unspecified address, so print the port and let the
-    // caller supply a reachable host — from another machine that is this box's
-    // LAN address, from this one it is 127.0.0.1.
-    if let Some(port) = endpoint.bound_sockets().iter().map(|a| a.port()).next() {
-        println!("  dial it: sirji dial {me}@<host>:{port}");
+    for key in net.drained() {
+        println!("  address {} is drained and can be unbound", key.alias);
     }
-    eprintln!("accepting connections");
+    let pending = net.peers.iter().filter(|p| p.is_pending()).count();
+    println!("  {} peer(s), {pending} pending", net.peers.len());
+    println!("  {} device(s)", net.devices.len());
+    Ok(())
+}
 
-    while let Some(incoming) = endpoint.accept().await {
-        tokio::spawn(async move {
-            if let Err(e) = serve(incoming).await {
-                eprintln!("connection failed: {e:#}");
+fn ask(request: Request) -> Result<()> {
+    let home = sirji::keystore::home()?;
+    let response = tokio::runtime::Runtime::new()?.block_on(daemon::ask(&home, &request))?;
+    render(response)
+}
+
+fn render(response: Response) -> Result<()> {
+    match response {
+        Response::Status {
+            home,
+            addresses,
+            peers,
+            pending,
+        } => {
+            println!("home     {home}");
+            for a in addresses {
+                let state = if a.retired { "retired" } else { "current" };
+                let bound = if a.bound { "bound" } else { "NOT BOUND" };
+                println!("address  {:<10} {state:<8} {bound:<10} {}", a.alias, a.key);
             }
-        });
-    }
-    Ok(())
-}
-
-async fn serve(incoming: sirji::Incoming) -> Result<()> {
-    let conn = incoming.await?;
-
-    // The dialer's identity, established by iroh before a byte of ours moves.
-    // This is where the design's known/unknown split will live: a key present in
-    // network.toml is an existing relationship, anything else is a handshake.
-    let caller = conn.remote_id();
-    println!("connection from {}", id52::encode(&caller));
-
-    let (mut send, mut recv) = conn.accept_bi().await?;
-    let bytes = tokio::io::copy(&mut recv, &mut send).await?;
-    send.finish()?;
-    println!("  echoed {bytes} byte(s)");
-
-    conn.closed().await;
-    Ok(())
-}
-
-async fn dial(target: &str, message: &str) -> Result<()> {
-    let (address, direct) = parse_target(target)?;
-    let store = Keystore::open()?;
-
-    // We dial from a freshly minted key. In the finished design this is the peer
-    // key for this relationship, minted once and kept; here it demonstrates the
-    // property that matters — the identity we present is ours to choose, and the
-    // listener sees exactly this key.
-    let identity = store.generate()?;
-    let secret = store.secret(&identity)?;
-    println!("dialling as {}", id52::encode(&identity));
-
-    let endpoint = sirji::endpoint::bind_dialer(secret).await?;
-    let conn = match direct {
-        Some(socket) => sirji::endpoint::dial_at(&endpoint, address, socket).await?,
-        None => sirji::dial(&endpoint, address).await?,
-    };
-
-    let (mut send, mut recv) = conn.open_bi().await?;
-    send.write_all(message.as_bytes()).await?;
-    send.finish()?;
-
-    let echoed = recv.read_to_end(64 * 1024).await?;
-    println!("echoed back: {}", String::from_utf8_lossy(&echoed));
-
-    conn.close(0u32.into(), b"done");
-    endpoint.close().await;
-    Ok(())
-}
-
-/// `<id52>` or `<id52>@<host>:<port>`.
-fn parse_target(target: &str) -> Result<(sirji::PublicKey, Option<std::net::SocketAddr>)> {
-    match target.split_once('@') {
-        None => Ok((id52::decode(target)?, None)),
-        Some((key, socket)) => {
-            let socket = socket
-                .parse()
-                .map_err(|e| anyhow::anyhow!("{socket:?} is not a host:port address: {e}"))?;
-            Ok((id52::decode(key)?, Some(socket)))
+            println!("peers    {peers} established, {pending} pending");
         }
+        Response::Invite { invite } => {
+            println!("{}", invite.encode());
+            eprintln!(
+                "\nsend that to them. they run:\n\n    sirji accept <their-name-for-you> <invite>\n"
+            );
+        }
+        Response::Accepted { alias } => println!("paired with {alias}"),
+        Response::Peers { peers } => {
+            if peers.is_empty() {
+                println!("no peers yet — `sirji invite <alias>` to start one");
+            }
+            for p in peers {
+                match p.peer {
+                    None => println!("{:<12} pending invite", p.alias),
+                    Some(their) => {
+                        println!("{:<12} {}", p.alias, their);
+                        println!("{:<12}   we are {} to them", "", p.mine);
+                        for a in &p.addresses {
+                            println!("{:<12}   reach at {a}", "");
+                        }
+                        if let Some(on) = &p.reached_on {
+                            println!("{:<12}   last arrived on our `{on}`", "");
+                        }
+                    }
+                }
+            }
+        }
+        Response::NewAddress { alias, key } => {
+            println!("handshake key `{alias}` {key}");
+            eprintln!("restart `sirjid` to bind it.");
+        }
+        Response::Error { message } => bail!("{message}"),
     }
+    Ok(())
 }
-

@@ -11,11 +11,16 @@
 //! See `DESIGN.md` for the full model. This crate is what an app embeds to become
 //! a sirji device.
 
+pub mod config;
+pub mod daemon;
 pub mod endpoint;
 pub mod id52;
 pub mod keystore;
+pub mod proto;
 
 pub use endpoint::{ALPN, Connection, Incoming, bind, bind_dialer, dial};
+pub use config::Network;
+pub use daemon::Daemon;
 pub use keystore::Keystore;
 
 /// Re-exported so callers need not depend on iroh directly to name a key.

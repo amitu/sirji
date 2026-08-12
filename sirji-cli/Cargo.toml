@@ -11,6 +11,10 @@ rust-version.workspace = true
 name = "sirji"
 path = "src/main.rs"
 
+[[bin]]
+name = "sirjid"
+path = "src/sirjid.rs"
+
 [dependencies]
 sirji.workspace = true
 anyhow.workspace = true

@@ -501,6 +501,86 @@ yields one device key, not a constellation.
 
 ---
 
+## Runtime — processes and channels
+
+A sirji has to be listening to be reachable, and a command-line invocation lasts
+milliseconds. So the two are different programs:
+
+- **`sirjid`** — the daemon. One per `$SIRJI_HOME`. It binds the handshake keys,
+  accepts peer connections, serves devices, and holds the live roster. It is the
+  only thing that touches the network.
+- **`sirji`** — the CLI. Short-lived, does no networking of its own, and asks the
+  daemon to act on its behalf.
+
+`$SIRJI_HOME` is the whole identity of an instance: a daemon *is* its home
+directory. Two instances on one machine are two directories, and nothing else has
+to differ — no ports to allocate, no flags to keep straight.
+
+```
+$SIRJI_HOME/
+  network.toml          the known net
+  keys/<id52>.private-key
+  sirji.sock            the control socket
+  sirjid.pid
+```
+
+### Three channels, three trust models
+
+| channel | transport | who may use it | what it is for |
+|---|---|---|---|
+| **CLI → own daemon** | unix socket in `$SIRJI_HOME` | anyone who can open the socket | administration: keys, pairing, peers, roster |
+| **device → its sirji** | iroh, device key → handshake key | a key listed in `[[device]]` | registering, claiming a name, heartbeat, resolving |
+| **peer → peer** | iroh, peer key → handshake key | anyone; known or not | relationships, and reaching named services |
+
+The first is **owner** authority and is not part of the protocol — filesystem
+permission on the socket *is* the authorization, which is why it needs no keys and
+no policy. The second and third are the protocol, and they are the same wire.
+
+**A device is not privileged by being local.** It dials its sirji over iroh with
+its own key, exactly as it would from another machine — so moving an app to a
+different box changes nothing but latency. This is what "apps are devices" means
+operationally, and it is why there is no local-agent hop: the daemon is not a
+proxy for its devices, it is the sirji they belong to.
+
+### Pairing, concretely
+
+Two instances that have never met, with no interactive approval anywhere:
+
+```
+   on B                                    on A
+   ─────                                   ─────
+   sirji init                              sirji init
+   sirji invite --alias alice
+     mints B_for_alice, records a
+     pending [[peer]], prints an
+     invite: B's addresses + domains
+     + B_for_alice
+        │
+        │  out of band (paste, QR, link)
+        ▼
+                                           sirji accept <invite> --alias bob
+                                             mints A_for_bob
+                                             dials one of B's addresses as A_for_bob
+                                             presents B_for_alice as what it came for
+   B's daemon: unknown key -> handshake
+     mode; the reference matches a
+     pending peer, so the dialer is
+     alice by construction. Fills in
+     peer = A_for_bob, replies with its
+     address set.
+                                           records peer = B_for_alice,
+                                             addresses = B's set
+```
+
+Both sides end with mirror-image `[[peer]]` entries and never used a directory,
+a server, or a human decision at connect time.
+
+*Dialling a stranger's address without an invite* — the publication path — needs
+somewhere for the owner to accept or refuse, which is a queue and a UI. Deferred;
+the invite path is complete on its own.
+
+---
+
 ## Registration, names, and liveness
 
 On startup a device dials its central sirji and **claims a name**: `builder`,
