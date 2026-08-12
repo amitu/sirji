@@ -100,6 +100,43 @@ address discovery for a relay. So relay-only operation works with no UDP egress 
 all: every packet is relayed, which is slower, but it connects. That property is
 what makes sirji shippable into an enterprise rather than merely nice on a laptop.
 
+### Measured on a Fortinet-filtered corporate network
+
+Not a hypothetical. Every line below was observed, and the conclusion is that the
+certificate problem is solved while a **hostname-blocking** problem is not yet.
+
+| probe | result |
+|---|---|
+| `openssl s_client` to `aps1-1.relay.n0.iroh.link` | cert issued by `O=Fortinet, CN=FG2H0GT925909113`, self-signed, **not in the Mac trust store** |
+| `curl` to the same host, default roots | exit 60, certificate rejected |
+| `curl --cacert <the fortinet CA>` | **exit 0** — TLS fine — but **HTTP 403, a FortiGate block page** |
+| `curl` to `use1-1.relay.iroh.network` | 200, serves "Iroh Relay", not intercepted at all |
+| iroh against that host | `invalid iroh-relay version header: <empty>` — a legacy relay, wrong protocol |
+| plain DNS TXT | works |
+
+So, precisely:
+
+1. **The certificate problem is solved**, two ways: the OS trust store on a managed
+   device, or `SIRJI_EXTRA_CA` pointing at the employer's CA when it is not
+   installed. Proven — the same request went from `exit 60` to `HTTP 200`.
+2. **The remaining blocker is category-blocking, not cryptography.** The firewall
+   returns its own 403 for n0's relay domain no matter what certificates say.
+3. **No working iroh-1.0 relay is reachable from this network.** The real relays are
+   blocked; the one that answers is an old-protocol server.
+
+**Therefore the fix is to run our own relay**, and for an app shipping sirji that is
+the right answer regardless: a relay on a hostname the customers already trust needs
+no new vendor domain approved, and cannot be category-blocked as an unknown. iroh
+ships a relay server, so this is deployment rather than development. `SIRJI_RELAY`
+now exists for exactly this.
+
+**Not yet proven end to end**, because there is no reachable 1.0 relay to point at.
+The next step is small and concrete: run `iroh-relay` on a VPS, set
+`SIRJI_RELAY=https://<that host>`, and confirm two sirjis on different networks
+connect. Until that is done, "sirji works behind a corporate proxy" is a
+well-founded expectation rather than a demonstrated fact, and it should not be
+promised to anyone as the latter.
+
 **TLS interception has three answers, in increasing order of independence:**
 
 1. **The enterprise CA is in the OS trust store.** Normal for a managed device, and

@@ -32,9 +32,11 @@ pub const ALPN: &[u8] = b"/sirji/1";
 /// and holds a relay connection, which is what makes us reachable and what makes
 /// a listening key more expensive than a dialling one.
 pub async fn bind(secret: SecretKey) -> Result<Endpoint> {
-    Endpoint::builder(presets::N0)
+    let builder = Endpoint::builder(presets::N0)
         .secret_key(secret)
-        .ca_tls_config(ca_config())
+        .ca_tls_config(ca_config());
+    let builder = with_relays(builder)?;
+    builder
         // Every lookup iroh offers, not just one. The N0 preset brings pkarr
         // publish/resolve and DNS, both of which need reachable n0 infrastructure;
         // mDNS needs nothing but the local network, so a LAN — or two sirjis on
@@ -46,24 +48,128 @@ pub async fn bind(secret: SecretKey) -> Result<Endpoint> {
         .map_err(|e| anyhow::anyhow!("binding endpoint: {e}"))
 }
 
-/// Verify TLS against the **operating system's** trust store, not a compiled-in
-/// copy of Mozilla's roots.
+/// Names a file or directory of extra CA certificates to trust, in PEM form.
 ///
-/// This is what lets sirji work on a network that intercepts TLS — a corporate
-/// laptop, a school, a country. Such a proxy presents its own certificate, signed
-/// by a CA that is installed in the OS store (or the user's browser would not work
-/// either) but is absent from any bundled list. With embedded roots, iroh cannot
-/// reach a relay *or* publish to pkarr, and the machine is left with mDNS and
-/// nothing else.
+/// The equivalent of `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` or
+/// `SSL_CERT_FILE`: every tool that has to survive a corporate network grows one,
+/// because the alternative is asking each user to modify a trust store they often
+/// do not administer.
+pub const EXTRA_CA_ENV: &str = "SIRJI_EXTRA_CA";
+
+/// Overrides which relay servers to use, comma-separated.
 ///
-/// What the proxy gains by being trusted here is only the discovery and relay
-/// metadata: which id52 is publishing, and that two endpoints exchange packets.
-/// **It cannot read peer traffic.** Peer connections authenticate by ed25519
-/// keypair, not by certificate authority, so there is no CA an interceptor could
-/// substitute — a relay forwards bytes it cannot decrypt, and so does the proxy
-/// carrying them.
+/// **This is not a tuning knob, it is a requirement.** The relays iroh ships with
+/// by default are a handful of hostnames belonging to one organisation, and a
+/// corporate web filter blocks a hostname by *category*, wholesale, regardless of
+/// certificates. Observed on a Fortinet-filtered network:
+/// `aps1-1.relay.n0.iroh.link` returns the firewall's block page while
+/// `use1-1.relay.iroh.network` serves the relay untouched — same protocol, same
+/// software, different verdict on the domain.
+///
+/// So a substrate whose premise is having no single point of failure cannot depend
+/// on one organisation's hostnames. An app shipping sirji should point this at a
+/// relay it runs, ideally on a domain its users already trust, which removes the
+/// "approve a new vendor domain" conversation entirely. A relay is small and
+/// stateless and forwards bytes it cannot read.
+pub const RELAY_ENV: &str = "SIRJI_RELAY";
+
+/// How TLS certificates are verified when talking to relays and discovery servers.
+///
+/// **This is the setting that decides whether sirji works inside a company.**
+/// Enterprises terminate TLS — Fortinet, Zscaler, Palo Alto, Netskope — so the
+/// certificate a relay appears to present is signed by the employer's CA, not by a
+/// public one. iroh's default is a copy of Mozilla's roots compiled into the
+/// binary, which by construction cannot contain that CA, so the default fails on
+/// exactly the networks the product is sold into.
+///
+/// Two layers, and both are needed in practice:
+///
+/// 1. **The OS trust store** ([`iroh::tls::CaTlsConfig::system`]). On a managed
+///    device the employer's CA is normally installed there, so interception is
+///    transparent — this is what a browser does, and it is why a browser works
+///    where a tool with bundled roots does not.
+/// 2. **Extra roots from [`EXTRA_CA_ENV`]**, for when it is *not* installed —
+///    inspection switched on without the CA being pushed, an unmanaged machine, a
+///    user without admin rights. Point the variable at the PEM and sirji trusts it
+///    without anyone touching the system store.
+///
+/// What trusting an interceptor actually costs is worth being exact about: it sees
+/// relay and discovery **metadata** — which id52 publishes, that two endpoints
+/// exchange packets. It cannot read peer traffic. Peer connections authenticate by
+/// ed25519 keypair rather than by certificate authority, so there is no CA an
+/// interceptor could substitute; a relay forwards bytes it cannot decrypt, and so
+/// does the proxy carrying them.
 fn ca_config() -> iroh::tls::CaTlsConfig {
-    iroh::tls::CaTlsConfig::system()
+    let config = iroh::tls::CaTlsConfig::system();
+    match extra_roots() {
+        Ok(roots) if !roots.is_empty() => config.with_extra_roots(roots),
+        Ok(_) => config,
+        Err(e) => {
+            // Loud, because silently falling back leaves someone debugging a
+            // connection failure whose cause is a typo in a path.
+            eprintln!("warning: ignoring {EXTRA_CA_ENV}: {e:#}");
+            config
+        }
+    }
+}
+
+/// Read every certificate from the file or directory named by [`EXTRA_CA_ENV`].
+fn extra_roots() -> Result<Vec<rustls_pki_types::CertificateDer<'static>>> {
+    let Some(path) = std::env::var_os(EXTRA_CA_ENV) else {
+        return Ok(Vec::new());
+    };
+    let path = std::path::PathBuf::from(path);
+
+    let mut files = Vec::new();
+    if path.is_dir() {
+        for entry in std::fs::read_dir(&path)
+            .with_context(|| format!("reading {}", path.display()))?
+        {
+            let entry = entry?.path();
+            if entry.is_file() {
+                files.push(entry);
+            }
+        }
+        files.sort();
+    } else {
+        files.push(path);
+    }
+
+    let mut roots = Vec::new();
+    for file in files {
+        let pem = std::fs::read(&file)
+            .with_context(|| format!("reading {}", file.display()))?;
+        let mut cursor = std::io::Cursor::new(pem);
+        let found: Vec<_> = rustls_pemfile::certs(&mut cursor)
+            .collect::<std::result::Result<_, _>>()
+            .with_context(|| format!("parsing certificates in {}", file.display()))?;
+        if found.is_empty() {
+            anyhow::bail!("{} contains no certificates", file.display());
+        }
+        roots.extend(found);
+    }
+    Ok(roots)
+}
+
+/// Apply [`RELAY_ENV`] if it is set, otherwise leave iroh's defaults alone.
+fn with_relays(builder: iroh::endpoint::Builder) -> Result<iroh::endpoint::Builder> {
+    let Some(value) = std::env::var_os(RELAY_ENV) else {
+        return Ok(builder);
+    };
+    let value = value.to_string_lossy().to_string();
+    let urls: Vec<&str> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if urls.is_empty() {
+        // An empty value is a deliberate "no relays": direct connectivity only.
+        return Ok(builder.relay_mode(iroh::RelayMode::Disabled));
+    }
+    let map = iroh::RelayMap::try_from_iter(urls.iter().copied())
+        .with_context(|| format!("{RELAY_ENV}={value:?} is not a list of relay URLs"))?;
+    Ok(builder.relay_mode(iroh::RelayMode::Custom(map)))
 }
 
 /// mDNS lookup. `advertise` says whether to announce ourselves as well as listen:
@@ -83,9 +189,11 @@ fn mdns(advertise: bool) -> iroh_mdns_address_lookup::MdnsAddressLookupBuilder {
 /// How much cheaper this is than [`bind`] is the open question in `PLAN.md`
 /// § Spike A, and it is the cost that scales with relationship count.
 pub async fn bind_dialer(secret: SecretKey) -> Result<Endpoint> {
-    Endpoint::builder(presets::N0)
+    let builder = Endpoint::builder(presets::N0)
         .secret_key(secret)
-        .ca_tls_config(ca_config())
+        .ca_tls_config(ca_config());
+    let builder = with_relays(builder)?;
+    builder
         // Resolve, but **do not advertise**. A peer key is an identity, and
         // broadcasting one on the local network would undo the unlinkability the
         // whole design rests on: anyone on the LAN could enumerate every identity

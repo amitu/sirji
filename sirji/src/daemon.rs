@@ -81,7 +81,7 @@ impl Daemon {
                     .map(|status| RelayInfo {
                         url: status.url().to_string(),
                         connected: status.is_connected(),
-                        error: status.last_error().map(|e| e.to_string()),
+                        error: status.last_error().map(|e| error_chain(e)),
                     })
                     .collect()
             })
@@ -417,6 +417,20 @@ impl Daemon {
         endpoint.close().await;
         Err(last.unwrap_or_else(|| anyhow::anyhow!("the invite carried no addresses")))
     }
+}
+
+/// The whole error, not just its outermost sentence.
+///
+/// "Failed to connect to relay server" names a symptom; the cause is three
+/// `source()` hops down, and without it a network problem is undiagnosable.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut out = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        out.push_str(&format!(": {cause}"));
+        source = cause.source();
+    }
+    out
 }
 
 /// Note which of our addresses a peer arrived on. This is what makes retiring an
