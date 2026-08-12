@@ -27,5 +27,4 @@ social/chat application on top of it is deliberately not designed yet.
 
 ## License
 
-Not yet chosen. Until one is added, no rights are granted — the documents are
-published for inspection and discussion.
+[MIT](LICENSE) © 2026 Amit Upadhyay
