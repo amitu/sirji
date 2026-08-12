@@ -124,6 +124,45 @@ So, precisely:
 3. **No working iroh-1.0 relay is reachable from this network.** The real relays are
    blocked; the one that answers is an old-protocol server.
 
+#### Every default relay, and the decisive measurement
+
+iroh ships **four** production relays and two staging ones. All six are on a single
+domain, `n0.iroh.link`, operated by one company. Tested with the intercepting CA
+trusted, so certificates are not the variable:
+
+| host | with CA trusted |
+|---|---|
+| `use1-1.relay.n0.iroh.link` | 403, firewall page |
+| `usw1-1.relay.n0.iroh.link` | 403, firewall page |
+| `euc1-1.relay.n0.iroh.link` | 403, firewall page |
+| `aps1-1.relay.n0.iroh.link` | 403, firewall page |
+| `use1-1.staging-relay.n0.iroh.link` | 403, firewall page |
+| `euc1-1.staging-relay.n0.iroh.link` | 403, firewall page |
+| `dns.iroh.link/pkarr` (discovery) | 403, firewall page |
+
+**One firewall rule against one domain removes every default relay and discovery
+server simultaneously.** There is no third-party public iroh relay to fall back to —
+Tailscale's DERP servers speak a different protocol — so "use a different public
+relay" is not an available answer. For a substrate whose premise is having no single
+point of failure, the default transport is one.
+
+And then the measurement that changes the conclusion:
+
+```
+stun.l.google.com:19302  -> binding success response   UDP EGRESS WORKS
+stun.cloudflare.com:3478 -> binding success response   UDP EGRESS WORKS
+```
+
+**UDP leaves this network freely, and plain DNS works.** So the network is entirely
+capable of peer-to-peer: QUIC can flow, hole-punching can work, direct connections
+are possible. Nothing here is blocked because it is peer-to-peer. Everything here is
+blocked because it is on `iroh.link`.
+
+That makes the remedy small rather than architectural. Coordination — a relay and a
+discovery server — has to live on a hostname the network does not refuse; once peers
+have found each other, they can likely connect directly over UDP and not use the
+relay for data at all.
+
 **Therefore the fix is to run our own relay**, and for an app shipping sirji that is
 the right answer regardless: a relay on a hostname the customers already trust needs
 no new vendor domain approved, and cannot be category-blocked as an unknown. iroh
