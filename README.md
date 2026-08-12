@@ -22,6 +22,8 @@ social/chat application on top of it is deliberately not designed yet.
   model, `network.toml`, keys on disk, registration and liveness, the
   control/data-plane connection flow, bootstrap, `name@sirji` addressing, and the
   build order.
+- **[PLAN.md](PLAN.md)** — the implementation plan: two spikes that gate the
+  design, then seven milestones, each ending in something runnable.
 - **[patterns/](patterns/)** — conventions for apps built on sirji, not substrate.
 - **[road-ahead.md](road-ahead.md)** — beyond v1; vision, not scope.
 
