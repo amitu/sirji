@@ -27,4 +27,9 @@ social/chat application on top of it is deliberately not designed yet.
 
 ## License
 
-[MIT](LICENSE) © 2026 Amit Upadhyay
+Licensed under either of [MIT](LICENSE-MIT) or
+[Apache-2.0](LICENSE-APACHE) at your option. © 2026 Amit Upadhyay
+
+Unless you state otherwise, any contribution you intentionally submit for
+inclusion in this work shall be dual licensed as above, without any additional
+terms or conditions.
