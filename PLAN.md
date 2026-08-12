@@ -87,6 +87,50 @@ Recorded in DESIGN.md § Connection flow; nothing left to spike.
 
 ---
 
+## Working on hostile networks
+
+Enterprises run TLS-terminating proxies and commonly block outbound UDP. Any app
+embedding sirji will meet this, so it is a first-class concern rather than an edge
+case. What was verified against iroh 1.0.3:
+
+**UDP being blocked is the bigger risk than TLS, and it is survivable.** The relay
+protocol is **WebSocket over TCP/443** (`tokio_websockets`), which is the one thing
+these networks do allow, and `RelayConfig::new(url, quic: None)` disables QUIC
+address discovery for a relay. So relay-only operation works with no UDP egress at
+all: every packet is relayed, which is slower, but it connects. That property is
+what makes sirji shippable into an enterprise rather than merely nice on a laptop.
+
+**TLS interception has three answers, in increasing order of independence:**
+
+1. **The enterprise CA is in the OS trust store.** Normal for a managed device, and
+   `CaTlsConfig::system()` (already the default here) then makes interception
+   transparent. The dev machine this was diagnosed on is the *broken* case — a
+   Fortinet CA doing interception that is not installed in the keychain, so no
+   application using its own trust store can work. That is a misconfigured
+   endpoint, not a network sirji has to defeat.
+2. **Allowlist, or bypass inspection for, the relay and discovery hosts.** Entirely
+   standard SaaS onboarding; every vendor publishes such a list.
+3. **Run your own relay.** `RelayMode::Custom` plus `RelayConfig::with_auth_token`
+   means a private, authenticated relay at a hostname the customer already trusts —
+   which removes the "approve a new vendor domain" conversation altogether. A relay
+   is small and stateless; it forwards bytes it cannot read.
+
+**The gap: explicit HTTP CONNECT proxies.** `iroh-relay`'s client supports
+`proxy_url()` internally, but iroh 1.0.3 does not expose it through
+`Endpoint::builder`, and nothing reads `HTTPS_PROXY` from the environment. On a
+network that *mandates* an explicit proxy rather than transparently intercepting,
+there is currently no way through. Upstream request or a small patch; worth
+settling before anyone promises an enterprise deployment.
+
+**What sirji should therefore build** (not yet built):
+
+- relay, discovery and proxy all configurable, per instance;
+- persisted peer transport addresses, so a known peer needs no discovery at all;
+- **`sirji doctor`** — one command reporting UDP egress, relay reachability,
+  discovery publish/resolve, and the trust-store verdict, with the failing host and
+  reason. Enterprise onboarding then becomes a self-service check rather than a
+  support ticket, and it is the cheapest possible answer to "it doesn't work here".
+
 ## Workspace layout
 
 ```
