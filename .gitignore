@@ -1,0 +1,10 @@
+# Rust
+/target
+**/*.rs.bk
+
+# never commit secrets: the runtime keystore lives at ~/.sirji/keys,
+# but guard against a stray copy landing in the repo (§ DESIGN.md Keys on disk)
+keys/
+*.private-key
+
+.DS_Store
