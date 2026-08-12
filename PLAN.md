@@ -138,14 +138,29 @@ is, when an app must distinguish "unknown name" from "no live holder". Not befor
 - **iroh renders keys as 64 hex characters**, so id52 is genuinely our own layer.
   `sirji::id52` is the only place the two forms meet, and a test asserts they
   differ so the boundary cannot quietly collapse.
-- **Discovery is unusable on the current dev machine.** pkarr publish/resolve runs
-  over HTTPS to `dns.iroh.link`, which fails TLS verification here — an
-  intercepting proxy. `Endpoint::online()` therefore never resolves, so it must
-  not gate accepting, and **dial-by-id52-alone cannot be exercised in this
-  environment**. Direct-address dialling (`<id52>@<host>:<port>`) was added: it
-  proves the wire, and it says *where* without ever saying *who* — the key still
-  authenticates the connection. Dial-by-key remains untested and is the first
-  thing to check somewhere with clean egress.
+- **Use every lookup, not one.** Relay and discovery are different layers, and
+  conflating them wasted time: relays carry packets through NAT once you know
+  where a key *is*; discovery is what turns a key into that. Relays were reachable
+  the whole time.
+
+  The `N0` preset brings pkarr publish/resolve and DNS, both of which need
+  reachable n0 infrastructure. On this machine pkarr-over-HTTPS fails TLS
+  verification (an intercepting proxy whose CA is not in the bundled roots), and
+  since *publishing* failed there was nothing for DNS to resolve either — one root
+  cause, two symptoms.
+
+  Adding **mDNS** (`iroh-mdns-address-lookup`) fixes it outright for a LAN or a
+  single machine, because it needs no infrastructure at all. Dial-by-id52 with no
+  address hints now works. The remaining gap is the *internet* path on a
+  proxied network, which is a TLS-roots problem rather than a design one.
+
+  One asymmetry worth keeping: handshake-key endpoints **advertise** over mDNS,
+  peer-key endpoints **resolve but never advertise**. An address should be
+  findable; an identity must not be, or anyone on the LAN could enumerate every
+  identity we present and the unlinkability is gone.
+
+- **`Endpoint::online()` must not gate accepting.** It waits for discovery to
+  publish, which may never happen; accepting works regardless.
 
 ### M1 — the wire
 

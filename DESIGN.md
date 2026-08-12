@@ -542,6 +542,51 @@ different box changes nothing but latency. This is what "apps are devices" means
 operationally, and it is why there is no local-agent hop: the daemon is not a
 proxy for its devices, it is the sirji they belong to.
 
+### A device has its own home
+
+A device is not a lightweight thing that borrows its parent's identity. It has its
+own `$SIRJI_HOME`: its own keys, its own `network.toml`, its own daemon if it wants
+one. That is what makes "a device may be on another machine" true rather than
+aspirational — nothing about a device assumes it can read its parent's directory.
+
+`sirji device init --parent <address>` creates that home and records which sirji it
+belongs to. The parent's address is an *input*, exactly as a peer's address is an
+input to pairing.
+
+### Enrolling a device is a handshake
+
+Listing a device key in `[[device]]` by hand would mean the parent already knew the
+key — which means it travelled out of band anyway, unverified. So **enrolment is
+the same exchange as pairing**, with the same two-key invite:
+
+```
+   on the parent                            on the device
+   ─────────────                            ─────────────
+   sirji device invite fs
+     mints an identity for it, records
+     a pending device claiming the
+     name `fs`, prints an invite
+        │
+        ▼
+                                            sirji device init --parent <invite>
+                                              mints its own key, dials, presents
+                                              the identity it was given
+   unknown key -> handshake mode;
+   the reference matches a pending
+   device, so this is `fs` by
+   construction. Records the key
+   against the name.
+```
+
+One mechanism, two outcomes: a completed exchange writes a `[[peer]]` when it is a
+relationship between people, and a `[[device]]` when it is a member of our own
+constellation. What differs is not how trust is established but what it grants —
+a peer gets a relationship, a device gets the right to answer to a name.
+
+The device then dials its parent over iroh like anything else, registers, and
+holds the connection open for heartbeats. Being on the same machine buys it
+nothing and is not detected.
+
 ### Pairing, concretely
 
 Two instances that have never met, with no interactive approval anywhere:

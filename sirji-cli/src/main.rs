@@ -17,6 +17,7 @@ const USAGE: &str = "\
 sirji — peer-to-peer network substrate
 
   sirji init                    create $SIRJI_HOME with its first handshake key
+  sirji daemon                  run the daemon for this $SIRJI_HOME (foreground)
   sirji status                  what the daemon is listening as
   sirji address new <alias>     mint another handshake key
   sirji invite <alias>          mint an identity for someone; print an invite
@@ -25,8 +26,9 @@ sirji — peer-to-peer network substrate
   sirji net check               validate network.toml without a daemon
   sirji key ls                  list the keystore, verifying every entry
 
-The daemon is `sirjid`. An instance is its $SIRJI_HOME (default ~/.sirji), so two
-sirjis on one machine are two directories and nothing else.";
+An instance is its $SIRJI_HOME (default ~/.sirji), so two sirjis on one machine
+are two directories and nothing else. Every command but `init` and `daemon` talks
+to the running daemon over the socket in that directory.";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -38,6 +40,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         ["init"] => init(),
+        ["daemon"] => daemon_run(),
         ["key", "ls"] => key_ls(),
         ["net", "check"] => net_check(),
         ["status"] => ask(Request::Status),
@@ -64,8 +67,20 @@ fn init() -> Result<()> {
     let (home, key) = daemon::init(&home)?;
     println!("sirji home {}", home.display());
     println!("handshake key `default` {key}");
-    println!("\nstart it with `sirjid`.");
+    println!("\nstart it with `sirji daemon`.");
     Ok(())
+}
+
+fn daemon_run() -> Result<()> {
+    let home = sirji::keystore::home()?;
+    if !sirji::Network::path_in(&home).exists() {
+        bail!("no sirji at {} — run `sirji init` first", home.display());
+    }
+    println!("sirji home {}", home.display());
+    tokio::runtime::Runtime::new()?.block_on(async {
+        let daemon = sirji::Daemon::start(home).await?;
+        daemon.run().await
+    })
 }
 
 fn key_ls() -> Result<()> {
@@ -162,7 +177,7 @@ fn render(response: Response) -> Result<()> {
         }
         Response::NewAddress { alias, key } => {
             println!("handshake key `{alias}` {key}");
-            eprintln!("restart `sirjid` to bind it.");
+            eprintln!("restart the daemon to bind it.");
         }
         Response::Error { message } => bail!("{message}"),
     }

@@ -17,6 +17,10 @@ use iroh::{Endpoint, PublicKey, SecretKey, endpoint::presets};
 /// boundary is deliberate: iroh's types and text forms stay on this side of it.
 pub use iroh::endpoint::{Connection, Incoming};
 
+/// Our mDNS service name, so sirjis find each other on a LAN without depending on
+/// anything outside it.
+const MDNS_SERVICE: &str = "sirji";
+
 /// Every sirji connection negotiates this ALPN. Apps layer their own protocol on
 /// top of the stream; they do not get their own ALPN, so a peer needs one
 /// connection to us, not one per app.
@@ -30,10 +34,23 @@ pub const ALPN: &[u8] = b"/sirji/1";
 pub async fn bind(secret: SecretKey) -> Result<Endpoint> {
     Endpoint::builder(presets::N0)
         .secret_key(secret)
+        // Every lookup iroh offers, not just one. The N0 preset brings pkarr
+        // publish/resolve and DNS, both of which need reachable n0 infrastructure;
+        // mDNS needs nothing but the local network, so a LAN — or two sirjis on
+        // one machine — works with no infrastructure at all.
+        .address_lookup(mdns(true))
         .alpns(vec![ALPN.to_vec()])
         .bind()
         .await
         .map_err(|e| anyhow::anyhow!("binding endpoint: {e}"))
+}
+
+/// mDNS lookup. `advertise` says whether to announce ourselves as well as listen:
+/// an address should be findable, an identity should not.
+fn mdns(advertise: bool) -> iroh_mdns_address_lookup::MdnsAddressLookupBuilder {
+    iroh_mdns_address_lookup::MdnsAddressLookup::builder()
+        .service_name(MDNS_SERVICE)
+        .advertise(advertise)
 }
 
 /// Bind an endpoint used only to dial, as `secret`'s public key.
@@ -47,6 +64,11 @@ pub async fn bind(secret: SecretKey) -> Result<Endpoint> {
 pub async fn bind_dialer(secret: SecretKey) -> Result<Endpoint> {
     Endpoint::builder(presets::N0)
         .secret_key(secret)
+        // Resolve, but **do not advertise**. A peer key is an identity, and
+        // broadcasting one on the local network would undo the unlinkability the
+        // whole design rests on: anyone on the LAN could enumerate every identity
+        // we present. Addresses are published; identities never are.
+        .address_lookup(mdns(false))
         .bind()
         .await
         .map_err(|e| anyhow::anyhow!("binding dialer endpoint: {e}"))
