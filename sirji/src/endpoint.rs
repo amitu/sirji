@@ -73,6 +73,17 @@ pub const EXTRA_CA_ENV: &str = "SIRJI_EXTRA_CA";
 /// stateless and forwards bytes it cannot read.
 pub const RELAY_ENV: &str = "SIRJI_RELAY";
 
+/// Shared token presented to the relays named by [`RELAY_ENV`].
+///
+/// A relay with no access control will relay for anyone who finds it, which on a
+/// public host means it eventually relays for strangers. A private relay should be
+/// configured with `access = { shared_token = [...] }` and its clients given the
+/// token here.
+///
+/// The token authorises *use of the relay*, nothing more. It is not an identity and
+/// grants no standing with any sirji: a relay forwards bytes it cannot read.
+pub const RELAY_TOKEN_ENV: &str = "SIRJI_RELAY_TOKEN";
+
 /// How TLS certificates are verified when talking to relays and discovery servers.
 ///
 /// **This is the setting that decides whether sirji works inside a company.**
@@ -169,6 +180,10 @@ fn with_relays(builder: iroh::endpoint::Builder) -> Result<iroh::endpoint::Build
     }
     let map = iroh::RelayMap::try_from_iter(urls.iter().copied())
         .with_context(|| format!("{RELAY_ENV}={value:?} is not a list of relay URLs"))?;
+    let map = match std::env::var(RELAY_TOKEN_ENV) {
+        Ok(token) if !token.is_empty() => map.with_auth_token(token),
+        _ => map,
+    };
     Ok(builder.relay_mode(iroh::RelayMode::Custom(map)))
 }
 
