@@ -59,8 +59,8 @@ assumptions.
 |---|---|---|
 | what it is | what you **listen on** | what you **dial from** |
 | how many | a few per sirji | one per relationship |
-| who holds it | whoever you gave it to | exactly one peer |
-| correlatable? | yes, within that set | **never** |
+| who holds it | everyone; freely published | exactly one peer |
+| correlatable? | yes — assumed public | **never** |
 | replaceable? | yes — rotation drains safely | no; it *is* the relationship |
 
 You are reached at an address. You are *recognised* by an identity. A peer knows
@@ -78,19 +78,30 @@ you present when *you* dial. That is what keeps the count of bound endpoints dow
 to the number of handshake keys, however many relationships you have — and it is
 why the direction of a dial never affects who can correlate you.
 
-### Handshake keys — address, interchangeable, rotatable
+### Handshake keys — address, public, interchangeable
 
 A handshake key is what you listen on and hand out. **All handshake keys are
-functionally identical**; the protocol has no per-key semantics and does not care
-which one a peer uses. Mint several because you want rotation, or because you want
-different circles to hold different addresses — the protocol treats them all the
-same either way.
+functionally identical** and the protocol has no per-key semantics: it does not
+care which one a peer uses. Mint more than one for rotation, or for redundancy —
+several published addresses mean several ways in, so one becoming unreachable is
+not an outage.
 
-Since an address is shared, everyone holding the same handshake key can determine
-they reach the same host. That is not a leak — handing several people the same
-string already told them so — and it is bounded by how narrowly you distribute
-each key. **Identity is unaffected**: even peers who share your address hold
-different peer keys for you and cannot correlate those.
+**They are all public, and all of them are shared with every peer.** A peer holds
+your whole current set, not one address, which is what makes rotation and failover
+work without a lookup service. They are published in DNS, printed on QR codes, and
+handed on by peers; none of that costs anything, because an address is not an
+identity.
+
+*Private, selectively-shared addresses are deliberately not a feature.* They would
+require tracking which key went to whom — a second distribution ledger to keep
+correct, and one whose staleness is invisible — to buy address-level unlinkability
+that peer keys already provide at the identity level. If a reason for them ever
+appears, the shape is clear (mark a key private; share only the non-private ones),
+but it is complexity to avoid until then.
+
+So **all address-level correlation is assumed.** Everyone can tell they reach the
+same host, and that is fine: their *identities* for you are separate peer keys,
+and those never correlate. Unlinkability lives entirely at the identity layer.
 
 ### One listener, two modes
 
@@ -113,14 +124,14 @@ It is, and the mechanism costs almost nothing:
 
 1. **Mint a new handshake key and publish it.** The old one stops being advertised
    but **keeps listening**.
-2. **A peer arriving on the retired key is handed the current one** as part of the
-   exchange, and updates its `[[peer]]` record. Its next dial uses the new address.
+2. **A peer arriving on the retired key is handed the current set** as part of the
+   exchange, and replaces its `addresses`. Its next dial uses a live one.
 3. **We record which of our handshake keys each peer last used.** When no peer
    still points at the retired key, nothing can arrive on it — so it can be
    **retired for good**, with certainty rather than by guessing at a timeout.
-4. **DNS is the backstop.** A peer that also recorded our domain can always refetch
-   the current key from `_sirji.<domain>`, so even a peer that vanished for years
-   and came back to a fully-retired address can recover without a re-introduction.
+4. **DNS is the backstop.** A peer that also recorded our domain can refetch the
+   current set from `_sirji.<domain>`, so even one that vanished for years and came
+   back to nothing but unbound addresses recovers without a re-introduction.
 
 This is why the last-used record earns its place in `network.toml`: it converts
 "has everyone moved on yet?" from an unanswerable question into a lookup.
@@ -257,11 +268,14 @@ what those names mean organisationally.)
 ```toml
 # network.toml — acme
 
+# our domains. every current handshake key is published at each of them,
+# and the list itself is shared with peers.
+dns = ["example.com", "acme.example"]
+
 # ── handshake keys: what we listen on. all functionally identical. ─────
 [[handshake-key]]
-alias     = "public-v2"
-key       = "kh3m9x2q..."
-published = "example.com"        # advertised in _sirji.example.com
+alias = "public-v2"
+key   = "kh3m9x2q..."
 
 [[handshake-key]]
 alias   = "public-v1"            # rotated out: no longer advertised,
@@ -273,16 +287,16 @@ retired = true
 alias      = "kiran"
 peer       = "k9m2ha4t..."       # their peer key — how we recognise them
 mine       = "k3xv8pq1..."       # our peer key — what we dial from
-address    = "khz7q4mv..."       # their handshake key — where we dial
-dns        = "kiran.example"     # optional: refetch their current address
-reached_on = "public-v2"         # which of ours they last dialled
+addresses  = ["khz7q4mv...", "kt2wj9xb..."]   # their current set — where we dial
+dns        = ["kiran.example"]               # theirs: refetch the set
+reached_on = "public-v2"                     # which of ours they last dialled
 
 [[peer]]
 alias      = "dana"
 peer       = "k51qzi5uqu5dijh7at4a9y2gk8pd0m3bqrxvce6nfu1s2h4j"
 mine       = "k77bqxr2m9d4pv8ac1ye5tgz0nkjs6hw3lfd1o8i5r2b7u9m"
-address    = "kb4np8ws..."
-reached_on = "public-v1"         # still on the retired key; it stays bound
+addresses  = ["kb4np8ws..."]
+reached_on = "public-v1"                     # still on the retired key; it stays bound
 
 # pending invite: we minted `mine` and sent it with an address.
 # `peer` arrives when they accept.
@@ -300,10 +314,14 @@ name = "chat"
 keys = ["k6hw3lfd...", "k1jd7so2..."]   # two machines answer to `chat`
 ```
 
+**`dns`** (top level) is our own domains. Every current handshake key is published
+at `_sirji.<each>`, so there is nothing per-key to record: a key is published
+exactly when it is not retired. The list is also **shared with peers**, so they can
+refetch our address set later without asking anyone.
+
 **`[[handshake-key]]`** is a key we listen on and hand out: an alias so it can be
-talked about and rotated, the key itself, optionally where it is published, and
-`retired = true` once it is no longer advertised but still bound. All of them are
-functionally identical to the protocol.
+talked about and rotated, the key itself, and `retired = true` once it is no longer
+advertised but still bound. All of them are functionally identical to the protocol.
 
 **`[[peer]]`** records a relationship. Both directions of the edge are local
 knowledge, so both keys appear, plus where to reach them:
@@ -312,10 +330,12 @@ knowledge, so both keys appear, plus where to reach them:
   therefore how we recognise them.
 - **`mine`** — our peer key for them. What we dial from, and what they recognise us
   by. Shown to exactly one peer, ever.
-- **`address`** — their *handshake* key, i.e. where we dial. Updated automatically
-  when they hand us a newer one.
-- **`dns`** — optional. Their domain, so we can refetch their current address from
-  `_sirji.<domain>` if the one we hold has been fully retired.
+- **`addresses`** — their current handshake keys: everywhere we may dial them.
+  Replaced wholesale whenever they hand us an updated set, and tried in order on
+  failure.
+- **`dns`** — their domains, if they have any, shared with us the same way we share
+  ours. Lets us refetch their set from `_sirji.<domain>` when every address we hold
+  has been unbound.
 - **`reached_on`** — which of *our* handshake keys they last arrived on. This is
   what makes retirement decidable: when no `[[peer]]` names a retired key, nothing
   can arrive on it and it can be unbound for good.
@@ -375,21 +395,22 @@ same fact written twice, in two places that could disagree. Gone.
 nothing to resolve: a name lookup is a scan of `[[device]]` for a matching `name`.
 It was scaffolding for mechanisms that no longer exist.
 
-### The substrate has no access gate — key possession is the gate
+### The substrate has no access gate
 
-What is left is a single sentence: **you can only reach what you were given a key
-to knock on.** Everything past that is the app's business.
+Addresses are public (§ *Handshake keys*), so **anyone may knock**. Knocking is not
+access: it starts a handshake, and a handshake only becomes a relationship if this
+sirji records it — because an invite it answers is pending, or because its owner
+accepts it.
 
-Concretely, central's rule when a peer resolves a name is only *does this name
-exist, and is a live holder available* — because by the time anyone can ask, they
-are already a known peer. Becoming known required knocking on a handshake key, and
-knocking required being given its key.
+Past that point the substrate decides nothing. Central's rule when a peer resolves
+a name is only *does this name exist, and is a live holder available.* There is no
+visibility rule, no per-name policy, no principal language.
 
-This is why the substrate needs no policy language. It is not that authorization
-was skipped; it is that **the authorization already happened, out of band, when
-you decided who to give a key to.** Every subsequent question — may this person
-run a test, post in this place, read this file — is downstream of a model call or
-an app rule, and belongs there.
+**Authorization is not skipped; it happens elsewhere.** Who becomes a peer at all
+is settled when a relationship is formed. Everything after — may this person run a
+test, post in this place, read this file — is downstream of an app rule or a model
+call, and belongs there. That is why this file needs no policy vocabulary: the
+substrate identifies, and the app authorizes.
 
 A name no `[[device]]` entry declares is claimable by nobody, so nothing answers
 to it.
@@ -525,22 +546,36 @@ The central sirji is DNS-plus-doorman, never a proxy:
 4. The peer dials the device **directly** — p2p, mutually authenticated — and
    presents the ticket. Central carries lookups, never traffic.
 
-**The ticket — enrichment travels with the connector.** Alongside the device
-id52, central hands the peer a sealed payload:
+**The ticket — enrichment travels with the connector.** Alongside the device id52,
+central hands the caller a **signed** payload:
 
-- **encrypted to the device's id52** — only that device can open it;
-- **signed by the central sirji's private key** — the device verifies it came
-  from its owning sirji, full stop;
-- **containing the identity context**: the name being addressed, and the peer's
-  alias from `network.toml` — or **no alias at all**, if they arrived through a
-  published handshake key and have never been named.
+```
+ticket = { name, caller, alias, valid_until }  +  central's signature
+```
 
-The device decrypts, verifies the signature, and knows exactly who is knocking
-and as what — **devices hold no `network.toml` and no identity state at all**. All
-identity authority concentrates at the central; a device trusts its owner's
-signature and nothing else. A connection arriving without a valid ticket is
-refused without further thought — the device *cannot* know who it is, by
-construction.
+- **`name`** — what was asked for.
+- **`caller`** — the peer key that will present it. This is what stops a ticket
+  being lent to someone else.
+- **`alias`** — who they are, from `network.toml`; or **absent**, if they arrived
+  through a public address and have never been named.
+- **`valid_until`** — a coarse bound, so an old ticket does not work forever.
+
+The device verifies central's signature, checks that the connecting key equals
+`caller`, and then knows exactly who is knocking and as what — **devices hold no
+`network.toml` and no identity state at all.** All identity authority concentrates
+at the central; a device trusts its owner's signature and nothing else. A
+connection arriving without a valid ticket is refused without further thought: the
+device *cannot* know who it is, by construction.
+
+**The ticket is signed, not encrypted.** An earlier draft required it encrypted to
+the device's id52, which is not possible — an id52 is an ed25519 *signing* key and
+ed25519 does no key agreement, so it would have meant a second X25519 key per
+device or an Edwards→Montgomery conversion. Neither is needed. Encryption would
+have been hiding the ticket from the only party who ever holds it, the caller, and
+it contains nothing they do not already know: the name they just asked for and
+their own alias. What must be true is that a ticket cannot be **forged** or
+**lent** — the signature gives the first, binding `caller` gives the second, and
+QUIC already encrypts the wire.
 
 **Caching:** a resolved device id52 is held — ticket alongside — and reused until
 the device stops answering, then re-resolved at central. No TTL machinery in v1;
@@ -584,10 +619,10 @@ Alice knows only H_B, an address of Bob's.
     │                                                  │  listener: A_for_B is
     │                                                  │  unknown → handshake mode
     │                                                  │  mints B_for_A
-    │  ◄─── B_for_A, and the current address ──────────  │
+    │  ◄─── B_for_A, Bob's address set + his domains ──  │
     │                                                  │
     │  records peer=B_for_A, mine=A_for_B,             │  records peer=A_for_B,
-    │          address=H_B                             │  mine=B_for_A,
+    │          addresses=[Bob's set]                   │  mine=B_for_A,
     │                                                  │  reached_on=<alias of H_B>
     │  ═══ later: Alice dials H_B as A_for_B ══════════╡
     │       and Bob dials Alice's address as B_for_A
@@ -600,26 +635,14 @@ on it. Bob's listener needed no negotiation to know this was a first contact —
 Note the consequence for `network.toml`: `[[peer]]` entries are the *residue* of
 handshakes that happened, not something you populate by looking people up.
 
-### A handshake key's distribution is its reach
+### Addresses are published, and shared as a set
 
-There is one kind of handshake key and no flags on it beyond `retired`. What varies
-is who you gave it to:
-
-- **published** in `_sirji.<domain>` — anyone may knock. The deliberate public face.
-- **private** — shared with friends, a team, a conference badge. Only they can
-  knock, because only they have it.
-
-That is the entire policy, and it needs no mechanism: **the capability is the key.**
-A flag saying "this one is public" would encode a second time what publishing
-already established, in a place where the two could disagree.
-
-Remember what this does and does not affect: everyone holding the same address can
-tell they reach the same host — but their *identities* for you are separate peer
-keys, which never correlate. Distribution controls address-level reach only.
+Every current handshake key is public. Publish them in DNS, print them on a badge,
+let peers pass them on:
 
 ```
 _sirji.example.com.  TXT  "id52=k51qzi5uqu5dijh7at4a9y2gk8pd0m3bqrxvce6nfu1s2h4j"
-_sirji.example.com.  TXT  "id52=k8w2nf5r..."      # more than one is fine
+_sirji.example.com.  TXT  "id52=k8w2nf5r..."      # more than one is normal
 ```
 
 The underscore-prefixed subdomain is the standard convention for service-specific
@@ -628,21 +651,33 @@ today. Earlier drafts wrote this as a `SIRJI` record type and as a
 `<name>.<domain>.sirji` lookup; **neither is deployable** — a new RRTYPE needs IANA
 registration, and `.sirji` is not a TLD. This form needs nothing but a TXT record.
 
-**Peers record the domain, not just the key.** A `[[peer]]` that carries `dns` can
-always refetch the current address, which is what makes an address safe to retire
-and a long-dormant relationship safe to resume.
+**A peer is given the whole current set, not one address**, and is given it again
+whenever it changes. Three things follow, and they are why this is worth doing:
+
+- **Failover.** A peer that cannot reach one address tries the next. No lookup
+  service, no timeout tuning.
+- **Rotation without coordination.** A new address reaches peers the next time they
+  talk to us; they simply stop using the retired one.
+- **DNS is only the last resort.** Domains are exchanged alongside addresses, so a
+  `[[peer]]` carrying `dns` can refetch the current set even if every address it
+  holds has been unbound — the case of a relationship dormant for years. A sirji
+  with no domain is perfectly normal; it just has one fewer way back.
+
+Publishing costs nothing because **an address is not an identity.** Everyone can
+see they reach the same host; nobody can link the peer keys behind it.
 
 ### The invite — two keys
 
 An invite carries **an address and an identity**:
 
 ```
-invite = ( one of our handshake keys , the peer key we minted for them )
-             where to dial               how we will be recognised,
-                                         and how they prove they are the invitee
+invite = ( our current addresses + domains , the peer key we minted for them )
+             where to dial, and where to               how we will be recognised,
+             look the addresses up later               and their proof of being
+                                                       the invitee
 ```
 
-Both are needed, and for different reasons. The handshake key is the address —
+Both are needed, and for different reasons. The handshake keys are the address —
 they cannot dial a peer key, because nobody listens on one. The peer key is the
 identity we will present when we dial *them*, so they can recognise us; and
 because it was sent to exactly one person, **presenting it is the proof that they

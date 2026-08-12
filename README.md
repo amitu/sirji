@@ -5,10 +5,10 @@ authenticated connections — shipped as a Rust crate that an app embeds to beco
 a sirji device.
 
 Every actor is an ed25519 keypair, and there are two kinds. A **handshake key** is
-an address: what you listen on and hand out, rotatable, shared with whoever you
-choose. A **peer key** is an identity: minted per relationship, shown to exactly
-one peer, and only ever dialled *from* — so no two peers can correlate you, no
-matter how many share your address. Connections are QUIC over
+an address: what you listen on, published freely, rotatable, and shared with every
+peer as a set. A **peer key** is an identity: minted per relationship, shown to
+exactly one peer, and only ever dialled *from* — so it needs no address of its own,
+and no two peers can correlate you even though your addresses are public. Connections are QUIC over
 [iroh](https://github.com/n0-computer/iroh), mutually authenticated by keypair,
 NAT-traversed and relay-backed, so location never matters.
 

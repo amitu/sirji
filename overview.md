@@ -70,19 +70,20 @@ real. The build order is in [DESIGN.md](DESIGN.md) § Build order.
 Five commitments that explain most of the specific decisions:
 
 1. **Address and identity are different layers.** You are *reached* at a handshake
-   key — shared, rotatable, and correlatable by whoever holds it. You are
-   *recognised* by a peer key — minted per relationship, shown to one peer, and
-   only ever dialled from, so it needs no address of its own. That split is what
-   makes per-relationship unlinkability free: an earlier draft made every identity
-   a listening endpoint and could not afford it.
+   key — public, rotatable, and shared with everyone. You are *recognised* by a
+   peer key — minted per relationship, shown to one peer, and only ever dialled
+   from, so it needs no address of its own. That split is what makes
+   per-relationship unlinkability free, and it is why addresses can be published
+   without hesitation: an address is not an identity.
 2. **The substrate holds no policy.** It identifies; it does not authorize.
    Possession of a handshake key is the only gate, and every *may this person do
    this* question belongs to the app.
 3. **Cryptographic facts are static; judgement is semantic.** They live in
    different files, read by different things, and never mix.
-4. **No mechanism for a fact already established elsewhere.** A handshake key's
-   distribution is its policy — a flag saying the same thing again is a second
-   source of truth that can disagree with the first.
+4. **No second ledger.** Anything that would need its own bookkeeping to stay
+   correct — and whose staleness would be invisible — is rejected unless it earns
+   it. Selectively-shared addresses were cut on exactly this ground: they would
+   require tracking which key went to whom, to buy what peer keys already give.
 5. **Minimal is a feature.** Every concept removed is a concept nobody has to
    learn, implement twice, or keep consistent. Several things were cut from this
    design after being written; DESIGN.md records what and why so they are not

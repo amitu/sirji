@@ -4,9 +4,8 @@ The build order from [DESIGN.md](DESIGN.md) § Build order, expanded into
 milestones. Each milestone ends in **something you can run**; none ends in a layer
 of types waiting for a caller.
 
-Two questions in DESIGN.md turn out to be unanswerable on paper and are settled by
-spikes here, before the code that depends on them — see § Spikes first. Everything
-else is decided.
+One question is settled by a measurement before the code that depends on it — see
+§ Spikes. Everything else is decided.
 
 ---
 
@@ -27,10 +26,10 @@ else is decided.
 
 ---
 
-## Spikes first
+## Spikes
 
-Two unknowns gate the design. Both are cheap to answer and expensive to guess
-wrong, so they come before the milestones that depend on them.
+One measurement, taken before the milestone that depends on it. A second question
+is recorded here as already resolved, since the reasoning is worth keeping.
 
 ### Spike A — what does an endpoint cost, and can they share network state?
 
@@ -67,35 +66,24 @@ relationships a sirji carries comfortably, and whether peer-key endpoints should
 bound lazily on first dial rather than at startup. Record the measurement in
 DESIGN.md § Identity.
 
-### Spike B — you cannot encrypt to an ed25519 key
+### Spike B — resolved: the ticket is signed, not encrypted
 
-DESIGN.md § *Connection flow* requires the sealed ticket to be **encrypted to the
-device's id52**. An id52 is an ed25519 *signing* key; ed25519 does not do key
-agreement, so this is not directly possible. Three ways out:
+DESIGN.md once required the sealed ticket **encrypted to the device's id52**. That
+is not possible: an id52 is an ed25519 *signing* key and ed25519 does no key
+agreement. The options were a second X25519 key per device, an Edwards→Montgomery
+conversion, or dropping the encryption.
 
-1. Give every device a second X25519 key purely for encryption — another key to
-   mint, publish, store and rotate.
-2. Convert the ed25519 public key to X25519 (the standard Edwards→Montgomery
-   birational map) and encrypt to that. Works, is used in practice, and is a
-   subtlety a second implementation must reproduce exactly.
-3. **Drop the encryption. Sign the ticket and bind it to the caller.**
-
-**Recommendation: (3), and it is a simplification rather than a compromise.** The
-encryption was protecting the ticket from the only party who ever holds it — the
-caller — and the ticket contains nothing the caller does not already know: the
-name they just asked for and their own alias. What actually needs to be true is
-that a ticket cannot be *forged* or *lent to someone else*. A signature gives the
-first; binding the caller's id52 into the signed payload gives the second:
+**Decided: drop it.** The encryption would have hidden the ticket from the only
+party who ever holds it — the caller — and it contains nothing they do not know.
+What must be true is that a ticket cannot be forged or lent, so:
 
 ```
-ticket = { name, caller_id52, alias, valid_until }  +  central's signature
+ticket = { name, caller, alias, valid_until }  +  central's signature
 ```
 
-The device verifies the signature and checks the connecting peer's id52 equals
-`caller_id52`. Confidentiality on the wire is already provided by QUIC. This
-removes X25519, key mapping, and a second key type from the substrate entirely.
-
-Settle this before M5.
+The device verifies the signature and checks the connecting key equals `caller`.
+QUIC already encrypts the wire. No X25519, no key conversion, no second key type.
+Recorded in DESIGN.md § Connection flow; nothing left to spike.
 
 ---
 
@@ -206,13 +194,13 @@ one; it disappears within 90s. Restart it; it returns.
 
 ### M5 — the ticket
 
-Depends on Spike B. Mint at central, verify at the device, and refuse a dial that
-presents no valid ticket — the refusal path is the part worth testing, since it is
-the only enforcement the substrate has.
+`{ name, caller, alias, valid_until }` signed by central. Mint at central, verify
+at the device, and refuse a dial that presents no valid ticket — the refusal path
+is the part worth testing, since it is the only enforcement the substrate has.
 
-**Done when:** a device rejects a direct dial with no ticket, rejects one signed
-by the wrong central, rejects one bound to a different caller, and accepts a good
-one.
+**Done when:** a device rejects a direct dial with no ticket, rejects one signed by
+the wrong central, rejects one whose `caller` is not the connecting key, rejects an
+expired one, and accepts a good one.
 
 ### M6 — `name@sirji`, end to end
 
