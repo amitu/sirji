@@ -23,6 +23,8 @@ sirji — peer-to-peer network substrate
   sirji invite <alias>          mint an identity for someone; print an invite
   sirji accept <alias> <invite> complete an invite and pair
   sirji peers                   every relationship, pending or established
+  sirji device invite <name>    mint an enrolment invite for a device
+  sirji devices                 our own fleet, and which are connected
   sirji net check               validate network.toml without a daemon
   sirji key ls                  list the keystore, verifying every entry
 
@@ -45,6 +47,10 @@ fn main() -> Result<()> {
         ["net", "check"] => net_check(),
         ["status"] => ask(Request::Status),
         ["peers"] => ask(Request::Peers),
+        ["devices"] => ask(Request::Devices),
+        ["device", "invite", name] => ask(Request::DeviceInvite {
+            name: (*name).to_string(),
+        }),
         ["address", "new", alias] => ask(Request::NewAddress {
             alias: (*alias).to_string(),
         }),
@@ -180,6 +186,19 @@ fn render(response: Response) -> Result<()> {
                         }
                     }
                 }
+            }
+        }
+        Response::Devices { devices } => {
+            if devices.is_empty() {
+                println!("no devices — `sirji device invite <name>` to enrol one");
+            }
+            for d in devices {
+                if d.pending {
+                    println!("{:<12} awaiting enrolment", d.name);
+                    continue;
+                }
+                let live = if d.live { "live" } else { "not connected" };
+                println!("{:<12} {live:<14} {}", d.name, d.keys.join(", "));
             }
         }
         Response::NewAddress { alias, key } => {

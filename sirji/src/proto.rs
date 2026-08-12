@@ -23,6 +23,14 @@ pub enum Hello {
     /// An existing relationship. Nothing to prove; `remote_id()` said who this is.
     Peer,
 
+    /// A device of ours, connecting to claim its name and stay reachable.
+    ///
+    /// There is no heartbeat: the connection **is** the liveness signal. QUIC
+    /// already has keepalives and tells us when a peer goes away, so a timer on
+    /// top would be reinventing it — and a device that has to be reachable has to
+    /// hold a connection anyway.
+    Device,
+
     /// First contact, answering an invite. `invited_to` is the key the other side
     /// minted for us and sent out of band — since it went to exactly one person,
     /// presenting it is the proof of being that person.
@@ -70,6 +78,11 @@ pub enum Request {
     Accept { alias: String, invite: Invite },
     /// Every relationship, pending or established.
     Peers,
+    /// Mint an enrolment identity for a device claiming `name`, and hand back an
+    /// invite it can accept. The same two-key invite as pairing.
+    DeviceInvite { name: String },
+    /// Our own fleet, and which of them are connected right now.
+    Devices,
     /// Mint a new handshake key and start listening on it.
     NewAddress { alias: String },
 }
@@ -91,6 +104,9 @@ pub enum Response {
     },
     Peers {
         peers: Vec<PeerInfo>,
+    },
+    Devices {
+        devices: Vec<DeviceInfo>,
     },
     NewAddress {
         alias: String,
@@ -144,6 +160,16 @@ pub struct RelayInfo {
     pub url: String,
     pub connected: bool,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    pub name: String,
+    pub keys: Vec<String>,
+    /// Awaiting enrolment.
+    pub pending: bool,
+    /// Holding a connection to us right now. This is the whole liveness story.
+    pub live: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,0 +1,17 @@
+[package]
+name = "t-sirji-fs"
+description = "a sirji device that serves a directory — the reference consumer of the sirji crate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sirji.workspace = true
+anyhow.workspace = true
+iroh.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true

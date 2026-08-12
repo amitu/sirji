@@ -30,6 +30,11 @@ pub struct Daemon {
     /// bound endpoint. Peer keys are not here: they are dialled from, never
     /// listened on.
     bound: Vec<(String, Endpoint)>,
+    /// Device names holding a connection to us right now.
+    ///
+    /// Not persisted, and deliberately not a timestamped roster: liveness is the
+    /// connection, so it lives and dies with the process that holds it.
+    live: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl Daemon {
@@ -60,6 +65,7 @@ impl Daemon {
             keys,
             net: Mutex::new(net),
             bound,
+            live: Mutex::new(Default::default()),
         }))
     }
 
@@ -142,6 +148,35 @@ impl Daemon {
         let hello: Hello = serde_json::from_str(line.trim())
             .with_context(|| format!("unreadable hello from {caller}"))?;
 
+        // A known device claiming its name is the one case where the connection is
+        // the point: it stays open, and that is what "live" means.
+        let device = {
+            let net = self.net.lock().await;
+            net.device_by_key(&caller).map(|d| d.name.clone())
+        };
+        if matches!(hello, Hello::Device)
+            && let Some(name) = device
+        {
+            let welcome = Welcome::Ok {
+                alias: name.clone(),
+                addresses: Vec::new(),
+                dns: Vec::new(),
+            };
+            let mut text = serde_json::to_string(&welcome)?;
+            text.push(crate::proto::NEWLINE as char);
+            send.write_all(text.as_bytes()).await?;
+
+            self.live.lock().await.insert(name.clone());
+            println!("device {name} registered ({caller})");
+
+            // Hold it. When it drops — process gone, network gone, cable pulled —
+            // the device stops being live without anyone timing anything out.
+            conn.closed().await;
+            self.live.lock().await.remove(&name);
+            println!("device {name} gone");
+            return Ok(());
+        }
+
         let welcome = self.greet(&caller, on, hello).await;
         let mut text = serde_json::to_string(&welcome)?;
         text.push(crate::proto::NEWLINE as char);
@@ -176,7 +211,33 @@ impl Daemon {
         match hello {
             Hello::Peer => bail!("we have no relationship with {caller}"),
 
+            // Handled before we got here when the key is known; reaching this means
+            // it is not one of our devices.
+            Hello::Device => bail!("{caller} is not one of our devices"),
+
             Hello::Invited { invited_to, addresses, dns } => {
+                // One mechanism, two outcomes. The invite identity says which:
+                // a pending device enrols, a pending peer pairs.
+                if let Some(device) = net.pending_device_by_invite(&invited_to) {
+                    let name = device.name.clone();
+                    let index = net
+                        .devices
+                        .iter()
+                        .position(|d| d.name == name)
+                        .expect("just found it");
+                    net.devices[index].keys = vec![caller.to_string()];
+                    net.devices[index].invite = None;
+                    net.check()?;
+                    net.save(&self.home)?;
+
+                    println!("device {name} enrolled ({caller})");
+                    return Ok(Welcome::Ok {
+                        alias: name,
+                        addresses: net.current_addresses(),
+                        dns: net.dns.clone(),
+                    });
+                }
+
                 // The key we minted for them went to exactly one person, so
                 // presenting it is the proof of being that person.
                 let Some(pending) = net.pending_by_mine(&invited_to) else {
@@ -343,6 +404,47 @@ impl Daemon {
                 })
             }
 
+            Request::DeviceInvite { name } => {
+                let mut net = self.net.lock().await;
+                if net.device_by_name(&name).is_some() {
+                    bail!("we already have a device called {name:?}");
+                }
+                let invite = id52::encode(&self.keys.generate()?);
+                net.devices.push(crate::config::Device {
+                    name,
+                    keys: Vec::new(),
+                    invite: Some(invite.clone()),
+                });
+                net.check()?;
+                net.save(&self.home)?;
+
+                Ok(Response::Invite {
+                    invite: Invite {
+                        addresses: net.current_addresses(),
+                        dns: net.dns.clone(),
+                        identity: invite,
+                        hints: self.hints(),
+                    },
+                })
+            }
+
+            Request::Devices => {
+                let net = self.net.lock().await;
+                let live = self.live.lock().await;
+                Ok(Response::Devices {
+                    devices: net
+                        .devices
+                        .iter()
+                        .map(|d| crate::proto::DeviceInfo {
+                            name: d.name.clone(),
+                            keys: d.keys.clone(),
+                            pending: d.is_pending(),
+                            live: live.contains(&d.name),
+                        })
+                        .collect(),
+                })
+            }
+
             Request::Accept { alias, invite } => self.accept(alias, invite).await,
         }
     }
@@ -475,6 +577,81 @@ async fn exchange(conn: &crate::Connection, hello: &Hello) -> Result<Welcome> {
     let mut line = String::new();
     recv.read_line(&mut line).await?;
     Ok(serde_json::from_str(line.trim())?)
+}
+
+/// Dial a parent listed in an invite and exchange one `Hello`.
+///
+/// Used by a device enrolling itself. Tries the invite's socket hints first, then
+/// falls back to dialling by key, exactly as pairing does.
+pub async fn greet_parent(
+    endpoint: &Endpoint,
+    invite: &Invite,
+    hello: Hello,
+) -> Result<Welcome> {
+    let mut last = None;
+    for address in &invite.addresses {
+        let target = id52::decode(address)?;
+        let conn = match dial_with_hints(endpoint, target, &invite.hints).await {
+            Ok(conn) => Ok(conn),
+            Err(hint_err) => crate::dial(endpoint, target)
+                .await
+                .map_err(|discovery_err| hint_err.context(discovery_err)),
+        };
+        match conn {
+            Ok(conn) => {
+                let welcome = exchange(&conn, &hello).await;
+                conn.close(0u32.into(), b"done");
+                match welcome {
+                    Ok(welcome) => return Ok(welcome),
+                    Err(e) => last = Some(e),
+                }
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("the invite carried no addresses")))
+}
+
+/// Register a device with its parent and **hold the connection** until it drops.
+///
+/// The connection is the registration: while it is open the parent counts this
+/// device as live, and when it closes the parent stops. Returning `Ok` means the
+/// parent hung up, not that anything went wrong.
+pub async fn register_device(
+    secret: &crate::SecretKey,
+    addresses: &[String],
+    hints: &[String],
+) -> Result<()> {
+    let endpoint = crate::endpoint::bind_dialer(secret.clone()).await?;
+
+    let mut last = None;
+    for address in addresses {
+        let target = id52::decode(address)?;
+        let conn = match dial_with_hints(&endpoint, target, hints).await {
+            Ok(conn) => Ok(conn),
+            Err(hint_err) => crate::dial(&endpoint, target)
+                .await
+                .map_err(|discovery_err| hint_err.context(discovery_err)),
+        };
+        match conn {
+            Ok(conn) => {
+                match exchange(&conn, &Hello::Device).await {
+                    Ok(Welcome::Ok { alias, .. }) => {
+                        println!("registered with parent as `{alias}`");
+                        // Hold it open. This is the liveness signal.
+                        conn.closed().await;
+                        endpoint.close().await;
+                        return Ok(());
+                    }
+                    Ok(Welcome::No { reason }) => last = Some(anyhow::anyhow!("{reason}")),
+                    Err(e) => last = Some(e),
+                }
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    endpoint.close().await;
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("no parent addresses to try")))
 }
 
 /// Create a home directory with its first handshake key.

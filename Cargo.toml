@@ -1,5 +1,5 @@
 [workspace]
-members = ["sirji", "sirji-cli"]
+members = ["sirji", "sirji-cli", "t-sirji-fs"]
 resolver = "3"
 
 [workspace.package]

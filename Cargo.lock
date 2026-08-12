@@ -3006,6 +3006,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "t-sirji-fs"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "iroh",
+ "serde",
+ "serde_json",
+ "sirji",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

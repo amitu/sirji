@@ -27,6 +27,8 @@ social/chat application on top of it is deliberately not designed yet.
 - **[PLAN.md](PLAN.md)** — the implementation plan: two spikes that gate the
   design, then seven milestones, each ending in something runnable.
 - **[patterns/](patterns/)** — conventions for apps built on sirji, not substrate.
+- **[t-sirji-fs/](t-sirji-fs/)** — the reference consumer: a device that serves a
+  directory, which another peer can list and download from.
 - **[deploy/relay/](deploy/relay/)** — running your own relay, which is what you do
   when a corporate firewall blocks the default ones.
 - **[road-ahead.md](road-ahead.md)** — beyond v1; vision, not scope.

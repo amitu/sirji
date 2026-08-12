@@ -71,8 +71,24 @@ pub struct Peer {
 /// One of our own devices: a name, and the keys authorised to answer to it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {
+    /// What it answers to. Peers address it as `name@us`.
     pub name: String,
+    /// The device's own keys. What it presents when it dials us, and what peers
+    /// dial after resolving the name. Empty while enrolment is outstanding.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<String>,
+    /// An identity minted for one device and sent to it, which it presents to
+    /// prove it is the invitee — the same two-key invite as pairing. Cleared once
+    /// enrolled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite: Option<String>,
+}
+
+impl Device {
+    /// Invited but not yet arrived.
+    pub fn is_pending(&self) -> bool {
+        self.keys.is_empty()
+    }
 }
 
 fn is_false(b: &bool) -> bool {
@@ -144,6 +160,25 @@ impl Network {
             .find(|p| p.is_pending() && p.mine == mine)
     }
 
+    pub fn device_by_name(&self, name: &str) -> Option<&Device> {
+        self.devices.iter().find(|d| d.name == name)
+    }
+
+    /// A device we minted an enrolment identity for and are still waiting on.
+    pub fn pending_device_by_invite(&self, invite: &str) -> Option<&Device> {
+        self.devices
+            .iter()
+            .find(|d| d.is_pending() && d.invite.as_deref() == Some(invite))
+    }
+
+    /// Which of our devices holds this key, if any. This is the device-side
+    /// equivalent of the known/unknown split on peer connections.
+    pub fn device_by_key(&self, key: &str) -> Option<&Device> {
+        self.devices
+            .iter()
+            .find(|d| d.keys.iter().any(|k| k == key))
+    }
+
     /// The names a device key may answer to.
     pub fn names_for_device_key(&self, key: &str) -> Vec<&str> {
         self.devices
@@ -200,10 +235,18 @@ impl Network {
             }
         }
 
+        let mut seen_name = std::collections::HashSet::new();
         for device in &self.devices {
+            if !seen_name.insert(&device.name) {
+                bail!("two devices share the name {:?}", device.name);
+            }
             for key in &device.keys {
                 id52::decode(key)
                     .with_context(|| format!("device {:?}", device.name))?;
+            }
+            if let Some(invite) = &device.invite {
+                id52::decode(invite)
+                    .with_context(|| format!("device {:?}: invite", device.name))?;
             }
         }
         Ok(())
@@ -259,6 +302,7 @@ mod tests {
         net.devices.push(Device {
             name: "fs".into(),
             keys: vec![key()],
+            invite: None,
         });
 
         let back: Network = toml::from_str(&toml::to_string_pretty(&net).unwrap()).unwrap();
