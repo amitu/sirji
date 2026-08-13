@@ -129,11 +129,9 @@ impl Daemon {
     fn hints(&self) -> Vec<String> {
         self.bound
             .iter()
-            .flat_map(|(_, endpoint)| endpoint.bound_sockets())
-            .map(|addr| addr.port())
+            .flat_map(|(_, endpoint)| crate::endpoint::reachable_at(endpoint))
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
-            .map(|port| format!("127.0.0.1:{port}"))
             .collect()
     }
 
@@ -876,7 +874,7 @@ async fn dial_with_hints(
                 continue;
             }
         };
-        match crate::endpoint::dial_at(endpoint, target, socket).await {
+        match crate::endpoint::dial_hint(endpoint, target, socket).await {
             Ok(conn) => return Ok(conn),
             Err(e) => last = Some(e),
         }

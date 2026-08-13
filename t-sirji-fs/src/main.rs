@@ -188,11 +188,7 @@ async fn serve() -> Result<()> {
 
     // Registering is holding a connection open: while it is up we are live, and
     // when it drops we are not. No heartbeat, no timeout to tune.
-    let listening: Vec<String> = endpoint
-        .bound_sockets()
-        .iter()
-        .map(|a| format!("127.0.0.1:{}", a.port()))
-        .collect();
+    let listening = sirji::endpoint::reachable_at(&endpoint);
     let registration = tokio::spawn(register(config.clone(), home.clone(), listening));
 
     let config = std::sync::Arc::new(config);
@@ -442,7 +438,7 @@ async fn ask(
             let mut out = Err(direct);
             for hint in &hints {
                 if let Ok(socket) = hint.parse()
-                    && let Ok(conn) = sirji::endpoint::dial_at(&endpoint, target, socket).await
+                    && let Ok(conn) = sirji::endpoint::dial_hint(&endpoint, target, socket).await
                 {
                     out = Ok(conn);
                     break;

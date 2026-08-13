@@ -249,3 +249,47 @@ pub async fn dial_at(
         .await
         .with_context(|| format!("dialling {} at {socket}", crate::id52::encode(&address)))
 }
+
+/// How long to spend on a remembered address before moving on.
+///
+/// A hint is a shortcut, so it has to fail like one. Left to QUIC's own patience a
+/// dead hint stalls for tens of seconds, which turns "try the shortcut first" into
+/// "wait for the shortcut to give up first" — slower than never having had it.
+pub const HINT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Dial a remembered address, giving up quickly so the caller can try the next one
+/// or fall through to discovery.
+pub async fn dial_hint(
+    endpoint: &Endpoint,
+    address: PublicKey,
+    socket: std::net::SocketAddr,
+) -> Result<Connection> {
+    match tokio::time::timeout(HINT_PATIENCE, dial_at(endpoint, address, socket)).await {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!("{socket} did not answer within {HINT_PATIENCE:?}"),
+    }
+}
+
+/// Where this endpoint can currently be reached, as socket addresses.
+///
+/// iroh's own view of its direct addresses: real interface addresses, which is what
+/// makes a hint useful to a peer on another machine.
+///
+/// The obvious shortcut — take each bound socket's port and pair it with
+/// `127.0.0.1` — is wrong twice. It is unreachable from anywhere else, and on the
+/// usual dual-stack bind the IPv6 socket contributes a *second, different* port,
+/// so half the hints name an IPv4 loopback port nothing listens on. Dialling one of
+/// those does not fail: it stalls, and pairing that had worked began hanging.
+pub fn reachable_at(endpoint: &Endpoint) -> Vec<String> {
+    endpoint
+        .addr()
+        .addrs
+        .into_iter()
+        .filter_map(|addr| match addr {
+            iroh::TransportAddr::Ip(socket) => Some(socket.to_string()),
+            // A relay URL is not somewhere we can be dialled directly, and it is
+            // already discoverable by key. Hints are the direct path only.
+            _ => None,
+        })
+        .collect()
+}
