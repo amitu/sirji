@@ -60,6 +60,11 @@ else
     echo "    wrote /etc/iroh-relay/relay.toml"
 fi
 
+echo "==> preparing the state directory"
+# systemd creates this too, but the relay may start before anyone notices it is
+# missing, and a certificate that cannot be cached fails slowly rather than loudly.
+install -d -o iroh-relay -g iroh-relay -m 0700 /var/lib/iroh-relay
+
 echo "==> installing the unit"
 install -m 0644 "$here/iroh-relay.service" /etc/systemd/system/iroh-relay.service
 systemctl daemon-reload

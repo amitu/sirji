@@ -48,7 +48,13 @@ contact = "you@example.com"
 
 cert_mode = "LetsEncrypt"
 prod_tls = true
-cert_dir = "/var/lib/iroh-relay/certs"
+
+# Exactly the directory systemd's StateDirectory= creates, with no subdirectory.
+# iroh-relay does not create this path — it hands it to the ACME cache — and
+# ProtectSystem=strict makes everything outside it read-only. Naming a
+# subdirectory here risks certificates that cannot be written, which shows up as
+# re-issuing on every restart until Let's Encrypt rate-limits you.
+cert_dir = "/var/lib/iroh-relay"
 
 https_bind_addr = "[::]:443"
 # UDP. iroh-relay's default; must be open or QUIC address discovery silently

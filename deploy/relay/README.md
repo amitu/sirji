@@ -76,6 +76,30 @@ An allowlist of endpoint ids also works, but needs an edit every time a device
 appears; a token does not. Either way the token authorises *use of the relay* and
 nothing else — it is not an identity and grants no standing with any sirji.
 
+## What has and has not been verified
+
+Honest about this, because a deployment guide that reads confidently and fails on
+contact is worse than one that says where it is unsure:
+
+- **Verified.** Every field name and default here was read out of iroh-relay
+  1.0.3's own `Config`, not invented. The file parses as TOML, and `install.sh`
+  passes `bash -n`.
+- **Not verified.** iroh's deserializer has never seen this file — `Config` is
+  private to the relay binary, so it cannot be exercised from outside. The real
+  check is running the relay, and that has not been done yet on a real host.
+
+Two mistakes were found by re-checking rather than by running, and both were the
+same shape — a file that looked right and meant something else:
+
+- `access` was written after the `[tls]` header, so TOML scoped it into that
+  table. iroh would have ignored it and left the relay **open to anyone**.
+- `cert_dir` pointed at a subdirectory of the systemd `StateDirectory`, which
+  systemd does not create and `ProtectSystem=strict` makes unwritable. Let's
+  Encrypt certificates would have failed to cache, re-issuing on every restart
+  until the rate limit stopped them.
+
+Expect a third. Read the journal on first start.
+
 ## Checking it
 
 ```sh
