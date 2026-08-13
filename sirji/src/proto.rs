@@ -29,7 +29,16 @@ pub enum Hello {
     /// already has keepalives and tells us when a peer goes away, so a timer on
     /// top would be reinventing it — and a device that has to be reachable has to
     /// hold a connection anyway.
-    Device,
+    Device {
+        /// Socket addresses this device is listening on.
+        ///
+        /// The parent hands these to anyone who resolves the device's name, which
+        /// is what makes a device reachable without depending on a discovery
+        /// service at all. Hints, not identity: they say *where*, the key still
+        /// says *who*.
+        #[serde(default)]
+        hints: Vec<String>,
+    },
 
     /// First contact, answering an invite. `invited_to` is the key the other side
     /// minted for us and sent out of band — since it went to exactly one person,

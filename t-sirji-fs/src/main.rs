@@ -185,7 +185,12 @@ async fn serve() -> Result<()> {
 
     // Registering is holding a connection open: while it is up we are live, and
     // when it drops we are not. No heartbeat, no timeout to tune.
-    let registration = tokio::spawn(register(config.clone(), home.clone()));
+    let listening: Vec<String> = endpoint
+        .bound_sockets()
+        .iter()
+        .map(|a| format!("127.0.0.1:{}", a.port()))
+        .collect();
+    let registration = tokio::spawn(register(config.clone(), home.clone(), listening));
 
     let config = std::sync::Arc::new(config);
     while let Some(incoming) = endpoint.accept().await {
@@ -202,13 +207,15 @@ async fn serve() -> Result<()> {
 
 /// Keep a connection to the parent for as long as we can, reconnecting when it
 /// drops. The connection *is* the registration.
-async fn register(config: Config, home: std::path::PathBuf) -> Result<()> {
+async fn register(config: Config, home: std::path::PathBuf, listening: Vec<String>) -> Result<()> {
     let keys = keystore(&home);
     let key = id52::decode(&config.key)?;
 
     loop {
         let secret = keys.secret(&key)?;
-        match sirji::daemon::register_device(&secret, &config.parent, &config.parent_hints).await {
+        match sirji::daemon::register_device(&secret, &config.parent, &config.parent_hints, &listening)
+            .await
+        {
             Ok(()) => println!("parent connection closed; reconnecting"),
             Err(e) => eprintln!("cannot reach parent: {e:#}"),
         }

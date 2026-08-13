@@ -37,7 +37,7 @@ pub struct Daemon {
     ///
     /// Not persisted, and deliberately not a timestamped roster: liveness is the
     /// connection, so it lives and dies with the process that holds it.
-    live: Mutex<std::collections::BTreeSet<String>>,
+    live: Mutex<std::collections::BTreeMap<String, Vec<String>>>,
 }
 
 impl Daemon {
@@ -186,9 +186,10 @@ impl Daemon {
             let net = self.net.lock().await;
             net.device_by_key(&caller).map(|d| d.name.clone())
         };
-        if matches!(hello, Hello::Device)
+        if let Hello::Device { hints } = &hello
             && let Some(name) = device
         {
+            let hints = hints.clone();
             let welcome = Welcome::Ok {
                 alias: name.clone(),
                 addresses: Vec::new(),
@@ -198,7 +199,7 @@ impl Daemon {
             text.push(crate::proto::NEWLINE as char);
             send.write_all(text.as_bytes()).await?;
 
-            self.live.lock().await.insert(name.clone());
+            self.live.lock().await.insert(name.clone(), hints);
             println!("device {name} registered ({caller})");
 
             // The same connection carries requests. A device that only registers
@@ -257,7 +258,7 @@ impl Daemon {
 
             // Handled before we got here when the key is known; reaching this means
             // it is not one of our devices.
-            Hello::Device => bail!("{caller} is not one of our devices"),
+            Hello::Device { .. } => bail!("{caller} is not one of our devices"),
 
             Hello::Invited { invited_to, addresses, dns } => {
                 // One mechanism, two outcomes. The invite identity says which:
@@ -362,14 +363,16 @@ impl Daemon {
                     };
                     // Only a live device is worth returning: handing back an
                     // address nobody is listening on turns one clear failure into
-                    // a dial timeout.
-                    if !self.live.lock().await.contains(&name) {
+                    // a dial timeout. The value is where the device told us it
+                    // listens, which is what lets a caller reach it with no
+                    // discovery service involved at all.
+                    let Some(hints) = self.live.lock().await.get(&name).cloned() else {
                         bail!("{name:?} is not connected");
-                    }
+                    };
                     // The ticket names *who asked*, not the key that will dial:
                     // the caller is one of their devices, and what the serving
                     // device needs to know is which person is behind it.
-                    (key, Some(asker_alias.clone()), Vec::new())
+                    (key, Some(asker_alias.clone()), hints)
                 };
 
                 // Sign with the address they reached us on. The device knows its
@@ -600,7 +603,7 @@ impl Daemon {
                             name: d.name.clone(),
                             keys: d.keys.clone(),
                             pending: d.is_pending(),
-                            live: live.contains(&d.name),
+                            live: live.contains_key(&d.name),
                         })
                         .collect(),
                 })
@@ -741,7 +744,7 @@ pub async fn ask_as_device(
         };
         match conn {
             Ok(conn) => {
-                let out = converse(&conn, &Hello::Device, ask).await;
+                let out = converse(&conn, &Hello::Device { hints: Vec::new() }, ask).await;
                 conn.close(0u32.into(), b"done");
                 match out {
                     Ok(say) => return Ok(say),
@@ -761,11 +764,14 @@ pub async fn ask_as_device(
 /// letting it drop at the end of a helper — either closes the stream, and the
 /// parent reads end-of-stream as the device having departed. So a device would
 /// report its own disappearance the instant it arrived, forever.
-async fn hold(conn: &crate::Connection) -> Result<()> {
+async fn hold(conn: &crate::Connection, listening_on: &[String]) -> Result<()> {
     let (mut send, recv) = conn.open_bi().await?;
     let mut recv = BufReader::new(recv);
 
-    send.write_all(format!("{}\n", serde_json::to_string(&Hello::Device)?).as_bytes())
+    let hello = Hello::Device {
+        hints: listening_on.to_vec(),
+    };
+    send.write_all(format!("{}\n", serde_json::to_string(&hello)?).as_bytes())
         .await?;
 
     let mut line = String::new();
@@ -915,6 +921,7 @@ pub async fn register_device(
     secret: &crate::SecretKey,
     addresses: &[String],
     hints: &[String],
+    listening_on: &[String],
 ) -> Result<()> {
     let endpoint = crate::endpoint::bind_dialer(secret.clone()).await?;
 
@@ -933,7 +940,7 @@ pub async fn register_device(
                 // a finished stream is indistinguishable from a departed device.
                 // Registration has to leave it open, because the open stream *is*
                 // the registration.
-                match hold(&conn).await {
+                match hold(&conn, listening_on).await {
                     Ok(()) => {
                         endpoint.close().await;
                         return Ok(());
