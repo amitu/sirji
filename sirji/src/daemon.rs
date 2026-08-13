@@ -348,56 +348,24 @@ impl Daemon {
 
     async fn answer(&self, ask: Ask, asker: &Asker) -> Result<Say> {
         match ask {
-            // A peer asking us where one of our devices is.
+            // A peer asking where one of our devices is.
             Ask::Resolve { name, caller } => {
-                let Asker::Peer(asker_alias) = asker else {
+                let Asker::Peer(alias) = asker else {
                     bail!("only a peer may ask us to locate our devices");
                 };
-                let (device_key, alias, hints) = {
-                    let net = self.net.lock().await;
-                    let Some(entry) = net.device_by_name(&name) else {
-                        bail!("we have no device called {name:?}");
-                    };
-                    let Some(key) = entry.keys.first().cloned() else {
-                        bail!("{name:?} has not enrolled yet");
-                    };
-                    // Only a live device is worth returning: handing back an
-                    // address nobody is listening on turns one clear failure into
-                    // a dial timeout. The value is where the device told us it
-                    // listens, which is what lets a caller reach it with no
-                    // discovery service involved at all.
-                    let Some(hints) = self.live.lock().await.get(&name).cloned() else {
-                        bail!("{name:?} is not connected");
-                    };
-                    // The ticket names *who asked*, not the key that will dial:
-                    // the caller is one of their devices, and what the serving
-                    // device needs to know is which person is behind it.
-                    (key, Some(asker_alias.clone()), hints)
-                };
+                self.locate(&name, &caller, Some(alias.clone())).await
+            }
 
-                // Sign with the address they reached us on. The device knows its
-                // parent's handshake keys, so it can check the issuer is genuinely
-                // us rather than trusting whatever the caller presents.
-                let issuer = {
-                    let net = self.net.lock().await;
-                    let key = net
-                        .current_addresses()
-                        .first()
-                        .cloned()
-                        .ok_or_else(|| anyhow::anyhow!("we have no current address to sign with"))?;
-                    self.keys.secret(&id52::decode(&key)?)?
+            // One of our own devices looking for a sibling. They hold no
+            // network.toml and cannot find each other any other way, and asking a
+            // peer about something inside our own fleet would be absurd. The
+            // answer includes a ticket: being a device of ours is not a reason to
+            // skip authorisation.
+            Ask::ResolveLocal { name } => {
+                let Asker::Device(caller) = asker else {
+                    bail!("only our own devices may resolve a sibling");
                 };
-
-                id52::decode(&caller)?;
-                let ticket = Ticket::mint(
-                    &issuer,
-                    &name,
-                    &caller,
-                    alias,
-                    crate::ticket::LIFETIME_SECS,
-                );
-                println!("resolved {name} for {caller}");
-                Ok(Say::Resolved { device: device_key, ticket, hints })
+                self.locate(&name, caller, None).await
             }
 
             // One of our own devices asking us to resolve a name at a peer. It
@@ -415,7 +383,7 @@ impl Daemon {
                 let mine = self.keys.secret(&id52::decode(&peer.mine)?)?;
 
                 // Dial them as the identity they know us by, and ask on the
-                // device's behalf — the ticket must be bound to the key that will
+                // device's behalf: the ticket must be bound to the key that will
                 // actually dial, which is the device's, not ours.
                 let endpoint = crate::endpoint::bind_dialer(mine).await?;
                 let result = ask_peer(
@@ -429,6 +397,49 @@ impl Daemon {
                 result
             }
         }
+    }
+
+    /// Locate one of our devices and mint a ticket admitting `caller` to it.
+    ///
+    /// `alias` is the person asking, when there is one. A sibling device gets
+    /// `None`: there is no person behind it to name.
+    async fn locate(&self, name: &str, caller: &str, alias: Option<String>) -> Result<Say> {
+        let device_key = {
+            let net = self.net.lock().await;
+            let Some(entry) = net.device_by_name(name) else {
+                bail!("we have no device called {name:?}");
+            };
+            let Some(key) = entry.keys.first().cloned() else {
+                bail!("{name:?} has not enrolled yet");
+            };
+            key
+        };
+
+        // Only a live device is worth returning: handing back an address nobody is
+        // listening on turns one clear failure into a dial timeout. The value is
+        // where the device told us it listens, which is what lets a caller reach it
+        // with no discovery service involved at all.
+        let Some(hints) = self.live.lock().await.get(name).cloned() else {
+            bail!("{name:?} is not connected");
+        };
+
+        // Sign with one of our current addresses. A device knows its parent's
+        // handshake keys, so it can check the issuer is genuinely us rather than
+        // trusting whatever the caller presents.
+        let issuer = {
+            let net = self.net.lock().await;
+            let key = net
+                .current_addresses()
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("we have no current address to sign with"))?;
+            self.keys.secret(&id52::decode(&key)?)?
+        };
+
+        id52::decode(caller)?;
+        let ticket = Ticket::mint(&issuer, name, caller, alias, crate::ticket::LIFETIME_SECS);
+        println!("resolved {name} for {caller}");
+        Ok(Say::Resolved { device: device_key, ticket, hints })
     }
 
     // -- control socket ------------------------------------------------------

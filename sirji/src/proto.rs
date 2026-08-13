@@ -84,6 +84,15 @@ pub enum Ask {
     /// — usually a device of the asker's, not the asker itself.
     Resolve { name: String, caller: String },
 
+    /// Where is a sibling — another device of the same parent?
+    ///
+    /// Devices in one constellation have no way to find each other otherwise:
+    /// they hold no `network.toml`, and asking a peer would be absurd for
+    /// something inside their own fleet. The parent knows all of them, so it
+    /// answers, and issues a ticket exactly as it would to an outsider — being
+    /// siblings is not a reason to skip authorisation.
+    ResolveLocal { name: String },
+
     /// Resolve `name@alias` on our behalf.
     ///
     /// Asked by one of our own devices, which holds no `network.toml` and so
