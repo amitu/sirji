@@ -859,27 +859,14 @@ fn note_reached_on(net: &mut Network, alias: &str, on: &str) {
     }
 }
 
-/// Try each hint, then give up so the caller can fall back to discovery.
+/// Try the remembered addresses, then give up so the caller can fall back to
+/// discovery.
 async fn dial_with_hints(
     endpoint: &Endpoint,
     target: crate::PublicKey,
     hints: &[String],
 ) -> Result<crate::Connection> {
-    let mut last = None;
-    for hint in hints {
-        let socket = match hint.parse() {
-            Ok(s) => s,
-            Err(e) => {
-                last = Some(anyhow::anyhow!("{hint:?} is not a socket address: {e}"));
-                continue;
-            }
-        };
-        match crate::endpoint::dial_hint(endpoint, target, socket).await {
-            Ok(conn) => return Ok(conn),
-            Err(e) => last = Some(e),
-        }
-    }
-    Err(last.unwrap_or_else(|| anyhow::anyhow!("no usable hints")))
+    crate::endpoint::dial_hints(endpoint, target, hints).await
 }
 
 async fn exchange(conn: &crate::Connection, hello: &Hello) -> Result<Welcome> {

@@ -432,20 +432,11 @@ async fn ask(
     let target = id52::decode(&key)?;
 
     let endpoint = sirji::endpoint::bind_dialer(secret).await?;
-    let conn = match sirji::dial(&endpoint, target).await {
+    // Hints first, discovery second: they came from the device itself moments ago,
+    // by way of its parent, and cost at most a few seconds if they have gone stale.
+    let conn = match sirji::endpoint::dial_hints(&endpoint, target, &hints).await {
         Ok(conn) => conn,
-        Err(direct) => {
-            let mut out = Err(direct);
-            for hint in &hints {
-                if let Ok(socket) = hint.parse()
-                    && let Ok(conn) = sirji::endpoint::dial_hint(&endpoint, target, socket).await
-                {
-                    out = Ok(conn);
-                    break;
-                }
-            }
-            out?
-        }
+        Err(_) => sirji::dial(&endpoint, target).await?,
     };
     let (mut send, recv) = conn.open_bi().await?;
 

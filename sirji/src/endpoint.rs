@@ -250,23 +250,45 @@ pub async fn dial_at(
         .with_context(|| format!("dialling {} at {socket}", crate::id52::encode(&address)))
 }
 
-/// How long to spend on a remembered address before moving on.
+/// How long to spend on remembered addresses before falling through to discovery.
 ///
 /// A hint is a shortcut, so it has to fail like one. Left to QUIC's own patience a
 /// dead hint stalls for tens of seconds, which turns "try the shortcut first" into
 /// "wait for the shortcut to give up first" — slower than never having had it.
-pub const HINT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
+pub const HINT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Dial a remembered address, giving up quickly so the caller can try the next one
-/// or fall through to discovery.
-pub async fn dial_hint(
+/// Dial `address` at every remembered socket at once.
+///
+/// All of them together, not one after another: iroh races the paths of a single
+/// `EndpointAddr` and keeps whichever answers, so a machine with four interface
+/// addresses costs one attempt rather than four sequential timeouts. Trying them in
+/// turn also mistakes ordering for information — nothing here knows which of a
+/// peer's addresses is the one reachable from where we happen to be standing.
+pub async fn dial_hints(
     endpoint: &Endpoint,
     address: PublicKey,
-    socket: std::net::SocketAddr,
+    hints: &[String],
 ) -> Result<Connection> {
-    match tokio::time::timeout(HINT_PATIENCE, dial_at(endpoint, address, socket)).await {
+    let sockets: Vec<std::net::SocketAddr> =
+        hints.iter().filter_map(|h| h.parse().ok()).collect();
+    if sockets.is_empty() {
+        anyhow::bail!("no usable hints");
+    }
+
+    let addr = sockets
+        .iter()
+        .fold(iroh::EndpointAddr::new(address), |addr, socket| {
+            addr.with_ip_addr(*socket)
+        });
+    let dial = async {
+        endpoint
+            .connect(addr, ALPN)
+            .await
+            .with_context(|| format!("dialling {} at {sockets:?}", crate::id52::encode(&address)))
+    };
+    match tokio::time::timeout(HINT_PATIENCE, dial).await {
         Ok(result) => result,
-        Err(_) => anyhow::bail!("{socket} did not answer within {HINT_PATIENCE:?}"),
+        Err(_) => anyhow::bail!("{sockets:?} did not answer within {HINT_PATIENCE:?}"),
     }
 }
 
