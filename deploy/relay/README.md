@@ -28,21 +28,49 @@ or several, is cheap.
 ```sh
 scp -r deploy/relay <server>:/tmp/
 ssh <server>
-sudo RELAY_HOSTNAME=relay.example.com CONTACT=you@example.com /tmp/relay/install.sh
+sudo RELAY_HOSTNAME=relay.example.com /tmp/relay/install.sh
 ```
-
-**Point DNS at the box first.** Let's Encrypt validates over HTTP on port 80, so
-the A/AAAA record has to exist before the relay starts or issuance fails. The
-script checks and refuses rather than leaving you with a relay that serves no
-HTTPS.
 
 Then, on a client:
 
 ```sh
+export SIRJI_EXTRA_CA=./relay.crt      # copied from the server
 export SIRJI_RELAY=https://relay.example.com
 sirji daemon
 sirji status          # the relay line should read 'connected'
 ```
+
+## Certificates — you probably do not want Let's Encrypt
+
+The reflex is ACME. It is usually the wrong call here, and the reason is worth
+understanding rather than following.
+
+**The relay never sees your data.** Peers authenticate each other by ed25519
+keypair and their session is end to end; the relay forwards bytes it cannot
+decrypt. So the certificate is not what stands between an attacker and your
+files. It hides *connection metadata* from a passive observer and stops an
+impostor posing as the relay — which would buy that impostor traffic analysis and
+the ability to drop packets, never the ability to read them.
+
+That makes this an operational choice, so pick the least fragile:
+
+| `CERT_MODE` | when | costs |
+|---|---|---|
+| `selfsigned` *(default)* | you ship the client | clients set `SIRJI_EXTRA_CA` |
+| `manual` | you already have a certificate for the domain | none; reuses your PKI and its renewals |
+| `letsencrypt` | strangers with unconfigured clients must connect | port 80, DNS before first start, 90-day renewals, rate limits, an external CA that must stay reachable |
+
+Four new failure modes, for something that is not protecting the payload — that
+is the trade `letsencrypt` asks you to make, and it is only worth it when you
+genuinely cannot configure the clients.
+
+Two cases where ACME is not merely awkward but unavailable: a relay inside a
+corporate network that cannot reach a public CA, and any host without a public
+DNS name. Both are ordinary enterprise deployments, and both work fine
+self-signed.
+
+Note that `SIRJI_EXTRA_CA` is the same variable used to trust a corporate CA —
+one knob doing both jobs, which is a decent sign the seam is in the right place.
 
 ## Ports
 

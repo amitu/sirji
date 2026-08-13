@@ -8,22 +8,35 @@
 
 set -euo pipefail
 
-RELAY_HOSTNAME="${RELAY_HOSTNAME:?set RELAY_HOSTNAME to the DNS name pointing at this box}"
-CONTACT="${CONTACT:?set CONTACT to an email for Let's Encrypt expiry notices}"
+RELAY_HOSTNAME="${RELAY_HOSTNAME:?set RELAY_HOSTNAME to the name clients will dial}"
 IROH_RELAY_VERSION="${IROH_RELAY_VERSION:-1.0.3}"
+
+# selfsigned | manual | letsencrypt
+#
+# selfsigned is the default because the relay never sees your data — peers are
+# authenticated end to end by keypair — so the certificate protects connection
+# metadata, not payload. That makes ACME's costs (port 80, DNS before start,
+# 90-day renewals, rate limits, an external CA that must stay reachable) a poor
+# trade unless strangers with unconfigured clients must connect.
+CERT_MODE="${CERT_MODE:-selfsigned}"
+CERT_DAYS="${CERT_DAYS:-3650}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "==> checking DNS"
-resolved="$(getent hosts "$RELAY_HOSTNAME" | awk '{print $1}' | head -1 || true)"
-if [ -z "$resolved" ]; then
-    echo "!! $RELAY_HOSTNAME does not resolve."
-    echo "   Let's Encrypt validates over HTTP on port 80, so DNS must point here"
-    echo "   BEFORE this runs, or certificate issuance fails and the relay will not"
-    echo "   serve HTTPS. Add the A/AAAA record, wait for it, then re-run."
-    exit 1
+if [ "$CERT_MODE" = "letsencrypt" ]; then
+    echo "==> checking DNS"
+    resolved="$(getent hosts "$RELAY_HOSTNAME" | awk '{print $1}' | head -1 || true)"
+    if [ -z "$resolved" ]; then
+        echo "!! $RELAY_HOSTNAME does not resolve."
+        echo "   Let's Encrypt validates over HTTP on port 80, so DNS must point here"
+        echo "   BEFORE this runs, or issuance fails and the relay serves no HTTPS."
+        echo "   Add the A/AAAA record, wait for it, then re-run — or use the default"
+        echo "   CERT_MODE=selfsigned, which needs none of this."
+        exit 1
+    fi
+    echo "    $RELAY_HOSTNAME -> $resolved"
+    : "${CONTACT:?letsencrypt needs CONTACT set to an email for expiry notices}"
 fi
-echo "    $RELAY_HOSTNAME -> $resolved"
 
 echo "==> installing build prerequisites"
 apt-get update -qq
@@ -65,6 +78,44 @@ echo "==> preparing the state directory"
 # missing, and a certificate that cannot be cached fails slowly rather than loudly.
 install -d -o iroh-relay -g iroh-relay -m 0700 /var/lib/iroh-relay
 
+case "$CERT_MODE" in
+selfsigned)
+    if [ -f /var/lib/iroh-relay/relay.crt ]; then
+        echo "==> certificate exists, leaving it alone"
+    else
+        echo "==> generating a self-signed certificate ($CERT_DAYS days)"
+        openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout /var/lib/iroh-relay/relay.key \
+            -out /var/lib/iroh-relay/relay.crt \
+            -days "$CERT_DAYS" -subj "/CN=$RELAY_HOSTNAME" \
+            -addext "subjectAltName=DNS:$RELAY_HOSTNAME" 2>/dev/null
+        chown iroh-relay:iroh-relay /var/lib/iroh-relay/relay.crt /var/lib/iroh-relay/relay.key
+        chmod 0600 /var/lib/iroh-relay/relay.key
+        chmod 0644 /var/lib/iroh-relay/relay.crt
+    fi
+    ;;
+manual)
+    for f in /var/lib/iroh-relay/relay.crt /var/lib/iroh-relay/relay.key; do
+        [ -f "$f" ] || { echo "!! CERT_MODE=manual but $f is missing"; exit 1; }
+    done
+    echo "==> using the certificate already in place"
+    ;;
+letsencrypt)
+    echo "==> switching config to LetsEncrypt"
+    sed -i \
+        -e 's|^cert_mode = "Manual"|cert_mode = "LetsEncrypt"|' \
+        -e 's|^manual_cert_path|# manual_cert_path|' \
+        -e 's|^manual_key_path|# manual_key_path|' \
+        -e "s|^# contact = .*|contact = \"$CONTACT\"|" \
+        -e 's|^# prod_tls = true|prod_tls = true|' \
+        /etc/iroh-relay/relay.toml
+    ;;
+*)
+    echo "!! CERT_MODE must be selfsigned, manual or letsencrypt"
+    exit 1
+    ;;
+esac
+
 echo "==> installing the unit"
 install -m 0644 "$here/iroh-relay.service" /etc/systemd/system/iroh-relay.service
 systemctl daemon-reload
@@ -87,6 +138,25 @@ systemctl is-active --quiet iroh-relay && echo "    running" || {
     journalctl -u iroh-relay -n 40 --no-pager
     exit 1
 }
+
+if [ "$CERT_MODE" = "selfsigned" ]; then
+cat <<EOF
+
+Relay installed at https://$RELAY_HOSTNAME
+
+The certificate is self-signed, so clients must be told to trust it. Copy it to
+each client and point SIRJI_EXTRA_CA at it:
+
+    scp $RELAY_HOSTNAME:/var/lib/iroh-relay/relay.crt ./relay.crt
+    export SIRJI_EXTRA_CA=\$PWD/relay.crt
+    export SIRJI_RELAY=https://$RELAY_HOSTNAME
+    sirji daemon
+    sirji status          # the relay line should read 'connected'
+
+That is the same variable used to trust a corporate CA — one knob, both jobs.
+EOF
+exit 0
+fi
 
 cat <<EOF
 

@@ -43,11 +43,44 @@ access = "everyone"
 [tls]
 # ── EDIT ─── the hostname clients will dial, and where DNS points at this box.
 hostname = "relay.example.com"
-# ── EDIT ─── Let's Encrypt sends expiry warnings here.
-contact = "you@example.com"
 
-cert_mode = "LetsEncrypt"
-prod_tls = true
+# How to get a certificate. Worth choosing deliberately, because the usual reflex
+# — Let's Encrypt — is the worst fit for a private relay.
+#
+# What the certificate is actually protecting is narrower than it looks. **The
+# relay never sees your data.** Peers authenticate each other by ed25519 keypair
+# and their session is end to end; the relay forwards bytes it cannot decrypt.
+# TLS here hides *connection metadata* from a passive observer and stops an
+# impostor posing as the relay — which would buy it traffic analysis and the
+# ability to drop packets, never the ability to read them.
+#
+# So this is an operational choice, not a security-critical one. Pick the least
+# fragile:
+#
+#   "Manual" + a certificate you already have
+#       Reuses your existing PKI and its renewal process, works with default
+#       trust stores, needs no ACME and no port 80. If you already run a
+#       wildcard for your domain, this is the answer.
+#
+#   "Manual" + a self-signed certificate, with clients setting SIRJI_EXTRA_CA
+#       No certificate authority at all, and an expiry you choose rather than 90
+#       days. Right whenever you ship the client, and the only option that works
+#       on a network where the relay itself cannot reach a public CA — an
+#       enterprise on-prem deployment, for instance.
+#
+#   "LetsEncrypt"
+#       Only when arbitrary, unconfigured clients must reach this relay. It buys
+#       that at the cost of port 80, DNS before first start, 90-day renewals,
+#       rate limits, and a dependency on an external CA being reachable — four
+#       new failure modes for something that is not protecting the payload.
+#
+cert_mode = "Manual"
+manual_cert_path = "/var/lib/iroh-relay/relay.crt"
+manual_key_path = "/var/lib/iroh-relay/relay.key"
+
+# Only read when cert_mode = "LetsEncrypt".
+# contact = "you@example.com"
+# prod_tls = true
 
 # Exactly the directory systemd's StateDirectory= creates, with no subdirectory.
 # iroh-relay does not create this path — it hands it to the ACME cache — and
