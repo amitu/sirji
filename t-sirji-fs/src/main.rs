@@ -171,6 +171,7 @@ async fn init(args: &[&str]) -> Result<()> {
 
 async fn serve() -> Result<()> {
     let home = Config::home()?;
+    sirji::Settings::load(&home)?.activate();
     let config = Config::load(&home)?;
     let keys = keystore(&home);
     let key = id52::decode(&config.key)?;

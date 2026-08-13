@@ -43,6 +43,10 @@ pub struct Daemon {
 impl Daemon {
     /// Bind every non-retired handshake key and start serving.
     pub async fn start(home: PathBuf) -> Result<Arc<Self>> {
+        // Operational settings belong to this home, so load them before anything
+        // binds an endpoint.
+        crate::Settings::load(&home)?.activate();
+
         let keys = Keystore::at(home.join("keys"));
         let net = Network::load(&home)?;
         net.check().context("network.toml is not usable")?;
@@ -77,9 +81,15 @@ impl Daemon {
     }
 
     /// Home relay state for one bound address.
+    ///
+    /// Includes relays that have no status yet. A configured relay that has not
+    /// connected reports nothing at all through iroh, so showing only what iroh
+    /// reports makes a mistyped URL and a working default look identical — both
+    /// print no relay line, and "did my config take?" becomes unanswerable.
     fn relays_of(&self, alias: &str) -> Vec<RelayInfo> {
         use iroh::Watcher;
-        self.bound
+        let mut relays: Vec<RelayInfo> = self
+            .bound
             .iter()
             .find(|(a, _)| a == alias)
             .map(|(_, endpoint)| {
@@ -94,7 +104,21 @@ impl Daemon {
                     })
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        for configured in crate::Settings::active().relay {
+            let known = relays
+                .iter()
+                .any(|r| r.url.trim_end_matches('/') == configured.trim_end_matches('/'));
+            if !known {
+                relays.push(RelayInfo {
+                    url: configured,
+                    connected: false,
+                    error: Some("configured, no connection yet".into()),
+                });
+            }
+        }
+        relays
     }
 
     /// Where we are reachable right now, as socket addresses.

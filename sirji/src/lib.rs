@@ -17,12 +17,14 @@ pub mod endpoint;
 pub mod id52;
 pub mod keystore;
 pub mod proto;
+pub mod settings;
 pub mod ticket;
 
 pub use endpoint::{ALPN, Connection, Incoming, bind, bind_dialer, dial};
 pub use config::Network;
 pub use daemon::Daemon;
 pub use keystore::Keystore;
+pub use settings::Settings;
 pub use ticket::Ticket;
 
 /// Re-exported so callers need not depend on iroh directly to name a key.

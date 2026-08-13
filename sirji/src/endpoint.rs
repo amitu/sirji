@@ -112,7 +112,7 @@ pub const RELAY_TOKEN_ENV: &str = "SIRJI_RELAY_TOKEN";
 /// does the proxy carrying them.
 fn ca_config() -> iroh::tls::CaTlsConfig {
     let config = iroh::tls::CaTlsConfig::system();
-    match extra_roots() {
+    match extra_roots(crate::Settings::active().extra_ca) {
         Ok(roots) if !roots.is_empty() => config.with_extra_roots(roots),
         Ok(_) => config,
         Err(e) => {
@@ -125,11 +125,12 @@ fn ca_config() -> iroh::tls::CaTlsConfig {
 }
 
 /// Read every certificate from the file or directory named by [`EXTRA_CA_ENV`].
-fn extra_roots() -> Result<Vec<rustls_pki_types::CertificateDer<'static>>> {
-    let Some(path) = std::env::var_os(EXTRA_CA_ENV) else {
+fn extra_roots(
+    path: Option<std::path::PathBuf>,
+) -> Result<Vec<rustls_pki_types::CertificateDer<'static>>> {
+    let Some(path) = path else {
         return Ok(Vec::new());
     };
-    let path = std::path::PathBuf::from(path);
 
     let mut files = Vec::new();
     if path.is_dir() {
@@ -164,24 +165,20 @@ fn extra_roots() -> Result<Vec<rustls_pki_types::CertificateDer<'static>>> {
 
 /// Apply [`RELAY_ENV`] if it is set, otherwise leave iroh's defaults alone.
 fn with_relays(builder: iroh::endpoint::Builder) -> Result<iroh::endpoint::Builder> {
-    let Some(value) = std::env::var_os(RELAY_ENV) else {
-        return Ok(builder);
-    };
-    let value = value.to_string_lossy().to_string();
-    let urls: Vec<&str> = value
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    if urls.is_empty() {
-        // An empty value is a deliberate "no relays": direct connectivity only.
+    let settings = crate::Settings::active();
+    if !settings.relays_configured() {
+        return Ok(builder); // nothing said: leave iroh's defaults alone
+    }
+    if settings.relay.is_empty() {
+        // Configured, and configured to none: direct connectivity only. Distinct
+        // from saying nothing at all.
         return Ok(builder.relay_mode(iroh::RelayMode::Disabled));
     }
-    let map = iroh::RelayMap::try_from_iter(urls.iter().copied())
-        .with_context(|| format!("{RELAY_ENV}={value:?} is not a list of relay URLs"))?;
-    let map = match std::env::var(RELAY_TOKEN_ENV) {
-        Ok(token) if !token.is_empty() => map.with_auth_token(token),
+
+    let map = iroh::RelayMap::try_from_iter(settings.relay.iter().map(String::as_str))
+        .with_context(|| format!("{:?} is not a list of relay URLs", settings.relay))?;
+    let map = match settings.relay_token {
+        Some(token) if !token.is_empty() => map.with_auth_token(token),
         _ => map,
     };
     Ok(builder.relay_mode(iroh::RelayMode::Custom(map)))
