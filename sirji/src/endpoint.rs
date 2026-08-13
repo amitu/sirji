@@ -15,7 +15,12 @@ use iroh::{Endpoint, PublicKey, SecretKey, endpoint::presets};
 
 /// Re-exported so an embedding app never has to name `iroh` itself. The crate
 /// boundary is deliberate: iroh's types and text forms stay on this side of it.
-pub use iroh::endpoint::{Connection, Incoming};
+///
+/// The streams belong here too, and their absence was a real hole: handing an app
+/// a `Connection` whose `accept_bi()` returns types it cannot name forces it to
+/// depend on iroh directly, which defeats the boundary. Found by building a second
+/// consumer that had no iroh dependency to fall back on.
+pub use iroh::endpoint::{Connection, Incoming, RecvStream, SendStream};
 
 /// Our mDNS service name, so sirjis find each other on a LAN without depending on
 /// anything outside it.

@@ -349,7 +349,7 @@ fn list(config: &Config, path: &str) -> Result<Vec<proto::Entry>> {
 }
 
 async fn reply(
-    send: &mut iroh::endpoint::SendStream,
+    send: &mut sirji::SendStream,
     say: &proto::Say,
 ) -> Result<()> {
     let mut text = serde_json::to_string(say)?;
@@ -402,7 +402,7 @@ async fn resolve(target: &str, key: &str, config: &Config) -> Result<(String, si
 async fn ask(
     target: &str,
     ask: &proto::Ask,
-) -> Result<(proto::Say, BufReader<iroh::endpoint::RecvStream>)> {
+) -> Result<(proto::Say, BufReader<sirji::RecvStream>)> {
     let home = Config::home()?;
     let keys = keystore(&home);
 

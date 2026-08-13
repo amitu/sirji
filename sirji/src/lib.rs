@@ -20,7 +20,9 @@ pub mod proto;
 pub mod settings;
 pub mod ticket;
 
-pub use endpoint::{ALPN, Connection, Incoming, bind, bind_dialer, dial};
+pub use endpoint::{
+    ALPN, Connection, Incoming, RecvStream, SendStream, bind, bind_dialer, dial,
+};
 pub use config::Network;
 pub use daemon::Daemon;
 pub use keystore::Keystore;

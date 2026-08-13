@@ -3010,7 +3010,6 @@ name = "t-sirji-fs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "iroh",
  "serde",
  "serde_json",
  "sirji",
