@@ -149,6 +149,9 @@ async fn init(args: &[&str]) -> Result<()> {
             invited_to: invite.identity.clone(),
             addresses: vec![config.key.clone()],
             dns: Vec::new(),
+            // Nothing to offer: we are not listening yet, and a device reports
+            // where it listens each time it registers, which never goes stale.
+            hints: Vec::new(),
         },
     )
     .await?;

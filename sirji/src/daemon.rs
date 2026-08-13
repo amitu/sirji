@@ -260,7 +260,7 @@ impl Daemon {
             // it is not one of our devices.
             Hello::Device { .. } => bail!("{caller} is not one of our devices"),
 
-            Hello::Invited { invited_to, addresses, dns } => {
+            Hello::Invited { invited_to, addresses, dns, hints } => {
                 // One mechanism, two outcomes. The invite identity says which:
                 // a pending device enrols, a pending peer pairs.
                 if let Some(device) = net.pending_device_by_invite(&invited_to) {
@@ -298,6 +298,7 @@ impl Daemon {
                 net.peers[index].peer = Some(caller.to_string());
                 net.peers[index].addresses = addresses;
                 net.peers[index].dns = dns;
+                net.peers[index].hints = hints;
                 net.peers[index].reached_on = Some(on.to_string());
                 net.check()?;
                 net.save(&self.home)?;
@@ -389,7 +390,7 @@ impl Daemon {
                 let result = ask_peer(
                     &endpoint,
                     &peer.addresses,
-                    &[],
+                    &peer.hints,
                     &Ask::Resolve { name, caller: caller.to_string() },
                 )
                 .await;
@@ -564,6 +565,8 @@ impl Daemon {
                     mine: mine.clone(),
                     addresses: vec![],
                     dns: vec![],
+                    // Filled in when they accept and tell us where they are.
+                    hints: vec![],
                     reached_on: None,
                 });
                 net.check()?;
@@ -647,6 +650,7 @@ impl Daemon {
             invited_to: invite.identity.clone(),
             addresses: our_addresses,
             dns: our_dns,
+            hints: self.hints(),
         };
 
         // Dial from the identity we just minted: this is what they will recognise
@@ -677,6 +681,9 @@ impl Daemon {
                                 mine,
                                 addresses,
                                 dns,
+                                // Where we just reached them. Current by
+                                // construction: the dial that got us here used it.
+                                hints: invite.hints.clone(),
                                 reached_on: None,
                             });
                             net.check()?;
@@ -993,7 +1000,7 @@ pub fn init(home: &Path) -> Result<(PathBuf, String)> {
 pub async fn ask(home: &Path, request: &Request) -> Result<Response> {
     let path = home.join(SOCKET);
     let stream = UnixStream::connect(&path).await.with_context(|| {
-        format!("no daemon at {} — start one with `sirjid`", path.display())
+        format!("no daemon at {} — start one with `sirji daemon`", path.display())
     })?;
     let (recv, mut send) = stream.into_split();
 

@@ -62,6 +62,14 @@ pub struct Peer {
     /// Their domains, if any, for refetching the set later.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dns: Vec<String>,
+    /// Socket addresses they were last known to listen on.
+    ///
+    /// A shortcut, never an identity: a hint that has gone stale costs one failed
+    /// dial before discovery takes over. Worth keeping because discovery is the part
+    /// most likely to be unavailable — a network that blocks relays, or a LAN with
+    /// client isolation, leaves a remembered address as the only way through.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hints: Vec<String>,
     /// Which of *our* handshake keys they last arrived on. This is what makes
     /// retiring an address decidable rather than a guess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -298,6 +306,7 @@ mod tests {
             addresses: vec![key()],
             dns: vec!["kiran.example".into()],
             reached_on: Some("public".into()),
+            hints: vec![],
         });
         net.devices.push(Device {
             name: "fs".into(),
@@ -331,6 +340,7 @@ mod tests {
                     addresses: vec![],
                     dns: vec![],
                     reached_on: None,
+                    hints: vec![],
                 },
                 Peer {
                     alias: "b".into(),
@@ -339,6 +349,7 @@ mod tests {
                     addresses: vec![],
                     dns: vec![],
                     reached_on: None,
+                    hints: vec![],
                 },
             ],
             ..Default::default()
@@ -358,6 +369,7 @@ mod tests {
                     addresses: vec![],
                     dns: vec![],
                     reached_on: None,
+                    hints: vec![],
                 },
                 Peer {
                     alias: "same".into(),
@@ -366,6 +378,7 @@ mod tests {
                     addresses: vec![],
                     dns: vec![],
                     reached_on: None,
+                    hints: vec![],
                 },
             ],
             ..Default::default()
@@ -383,6 +396,7 @@ mod tests {
                 addresses: vec![],
                 dns: vec![],
                 reached_on: Some("gone".into()),
+                hints: vec![],
             }],
             ..Default::default()
         };
@@ -403,6 +417,7 @@ mod tests {
                 addresses: vec![],
                 dns: vec![],
                 reached_on: Some("v1".into()),
+                hints: vec![],
             }],
             ..Default::default()
         };
@@ -436,6 +451,7 @@ mod tests {
                 addresses: vec![],
                 dns: vec![],
                 reached_on: None,
+                hints: vec![],
             }],
             ..Default::default()
         };

@@ -50,6 +50,11 @@ pub enum Hello {
         /// Our domains, so they can refetch the set later.
         #[serde(default)]
         dns: Vec<String>,
+        /// Where we listen, so their first dial back needs no discovery. The
+        /// invite carried theirs; this is the same courtesy in the other
+        /// direction, and pairing is the one moment both sides are certainly up.
+        #[serde(default)]
+        hints: Vec<String>,
     },
 }
 
