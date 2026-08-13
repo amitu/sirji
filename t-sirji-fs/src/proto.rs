@@ -7,6 +7,17 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The first line on any connection: the ticket, when the caller has one.
+///
+/// A direct dial carries none, which the server may accept or refuse as it likes —
+/// sirji authenticates the *key* either way, the ticket is what turns a key into a
+/// name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Knock {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<sirji::Ticket>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum Ask {

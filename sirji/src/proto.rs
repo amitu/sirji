@@ -60,6 +60,43 @@ pub enum Welcome {
     No { reason: String },
 }
 
+/// What may be asked once a connection has been greeted.
+///
+/// The greeting settles *who*; this is *what*. A connection can carry any number
+/// of these, or none — a device that only registers sends none and simply holds
+/// the stream open.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "ask", rename_all = "kebab-case")]
+pub enum Ask {
+    /// Where is the device answering to `name`, and may `caller` reach it?
+    ///
+    /// Asked peer-to-peer, by the sirji acting for the caller. `caller` is the key
+    /// that will actually dial the device, which is what the ticket gets bound to
+    /// — usually a device of the asker's, not the asker itself.
+    Resolve { name: String, caller: String },
+
+    /// Resolve `name@alias` on our behalf.
+    ///
+    /// Asked by one of our own devices, which holds no `network.toml` and so
+    /// cannot know who `alias` is. We look the peer up, ask them, and pass the
+    /// answer back.
+    ResolveFor { name: String, alias: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "say", rename_all = "kebab-case")]
+pub enum Say {
+    /// The device's id52, and a ticket admitting `caller` to it.
+    Resolved {
+        device: String,
+        ticket: crate::ticket::Ticket,
+        /// Where the device can be reached, when we know. Hints, not identity.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hints: Vec<String>,
+    },
+    No { reason: String },
+}
+
 // ---------------------------------------------------------------------------
 // cli <-> daemon
 // ---------------------------------------------------------------------------

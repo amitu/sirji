@@ -29,10 +29,11 @@ t-sirji-fs — a sirji device that serves a directory
   t-sirji-fs status
         what this device is and where it belongs
 
-  t-sirji-fs ls  <id52> [path]
-  t-sirji-fs get <id52> <path>
-        read from another t-sirji-fs. Dials it directly for now; resolving
-        `name@peer` through the parent is the next step.
+  t-sirji-fs ls  <name@peer> [path]
+  t-sirji-fs get <name@peer> <path>
+        read from another t-sirji-fs. Our parent resolves `peer`, asks them
+        where `name` is, and returns a ticket bound to our key. A bare id52
+        still dials, but a served device refuses a dial with no ticket.
 
 $TSF_HOME defaults to ~/.t-sirji-fs. A device has its own home because a device
 may be on another machine.";
@@ -223,6 +224,63 @@ async fn handle(incoming: sirji::Incoming, config: std::sync::Arc<Config>) -> Re
 
     let (mut send, recv) = conn.accept_bi().await?;
     let mut recv = BufReader::new(recv);
+
+    // The knock carries the ticket our parent issued. Verifying it tells us who is
+    // calling; we keep no identity state and could not know otherwise.
+    let mut line = String::new();
+    recv.read_line(&mut line).await?;
+    let knock: proto::Knock = serde_json::from_str(line.trim())
+        .unwrap_or(proto::Knock { ticket: None });
+
+    match &knock.ticket {
+        Some(ticket) => match ticket.verify(&conn.remote_id(), &config.parent) {
+            Ok(()) => {
+                let who = ticket.alias.as_deref().unwrap_or("an unnamed peer");
+                println!("  ticket ok: {who}, for `{}`", ticket.name);
+                if ticket.name != config.name {
+                    reply(
+                        &mut send,
+                        &proto::Say::No {
+                            reason: format!("this ticket is for `{}`, we are `{}`", ticket.name, config.name),
+                        },
+                    )
+                    .await?;
+                    send.finish()?;
+                    conn.closed().await;
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                println!("  ticket refused: {e:#}");
+                reply(&mut send, &proto::Say::No { reason: format!("{e:#}") }).await?;
+                send.finish()?;
+                conn.closed().await;
+                return Ok(());
+            }
+        },
+        None => {
+            // Refused, deliberately. A device id52 is not a secret — it is handed
+            // to everyone who resolves the name — so accepting un-ticketed dials
+            // would make the ticket decorative and the directory readable by
+            // anyone who ever looked us up.
+            println!("  refused: no ticket");
+            reply(
+                &mut send,
+                &proto::Say::No {
+                    reason: "no ticket — resolve us as `name@peer` instead of dialling directly"
+                        .into(),
+                },
+            )
+            .await?;
+            // Finish and wait: a refusal the caller never receives is
+            // indistinguishable from a crash, and sends them debugging the wrong
+            // thing.
+            send.finish()?;
+            conn.closed().await;
+            return Ok(());
+        }
+    }
+
     let mut line = String::new();
     recv.read_line(&mut line).await?;
 
@@ -309,18 +367,86 @@ async fn reply(
 /// address comes from resolving `name@peer` at the peer's sirji, which also hands
 /// over a ticket; this dials the device key directly, which is the same wire
 /// without the doorman.
+/// Turn `name@peer` into a device id52 and a ticket, by asking our parent.
+///
+/// We hold no `network.toml` and so have no idea who `peer` is — that is the
+/// point of a device. Our parent knows, asks them on our behalf, and the ticket
+/// comes back bound to *our* key, because we are the one who will dial.
+async fn resolve(target: &str, key: &str, config: &Config) -> Result<(String, sirji::Ticket, Vec<String>)> {
+    let Some((name, alias)) = target.split_once('@') else {
+        bail!("{target:?} is not name@peer");
+    };
+    let home = Config::home()?;
+    let secret = keystore(&home).secret(&id52::decode(key)?)?;
+
+    let endpoint = sirji::endpoint::bind_dialer(secret).await?;
+    let say = sirji::daemon::ask_as_device(
+        &endpoint,
+        &config.parent,
+        &config.parent_hints,
+        &sirji::proto::Ask::ResolveFor {
+            name: name.to_string(),
+            alias: alias.to_string(),
+        },
+    )
+    .await;
+    endpoint.close().await;
+
+    match say? {
+        sirji::proto::Say::Resolved { device, ticket, hints } => Ok((device, ticket, hints)),
+        sirji::proto::Say::No { reason } => bail!("{reason}"),
+    }
+}
+
 async fn ask(
     target: &str,
     ask: &proto::Ask,
 ) -> Result<(proto::Say, BufReader<iroh::endpoint::RecvStream>)> {
-    let target = id52::decode(target)?;
     let home = Config::home()?;
     let keys = keystore(&home);
-    let secret = keys.secret(&keys.generate()?)?;
+
+    // Dial as ourselves when we have an identity, so the ticket can be bound to
+    // it. Without a config there is nothing to be bound to, so mint one.
+    let (key, ticket, hints) = match Config::load(&home) {
+        Ok(config) if target.contains('@') => {
+            let (device, ticket, hints) = resolve(target, &config.key, &config).await?;
+            eprintln!("resolved {target} -> {device}");
+            (device, Some(ticket), hints)
+        }
+        Ok(config) => (target.to_string(), None, config.parent_hints.clone()),
+        Err(_) if target.contains('@') => bail!("no device home: run `t-sirji-fs init` first"),
+        Err(_) => (target.to_string(), None, Vec::new()),
+    };
+    let mine = match Config::load(&home) {
+        Ok(config) => id52::decode(&config.key)?,
+        Err(_) => keys.generate()?,
+    };
+    let secret = keys.secret(&mine)?;
+    let target = id52::decode(&key)?;
 
     let endpoint = sirji::endpoint::bind_dialer(secret).await?;
-    let conn = sirji::dial(&endpoint, target).await?;
+    let conn = match sirji::dial(&endpoint, target).await {
+        Ok(conn) => conn,
+        Err(direct) => {
+            let mut out = Err(direct);
+            for hint in &hints {
+                if let Ok(socket) = hint.parse()
+                    && let Ok(conn) = sirji::endpoint::dial_at(&endpoint, target, socket).await
+                {
+                    out = Ok(conn);
+                    break;
+                }
+            }
+            out?
+        }
+    };
     let (mut send, recv) = conn.open_bi().await?;
+
+    // The ticket goes first when we have one: it is what lets the device know who
+    // we are without holding any identity state of its own.
+    let mut text = serde_json::to_string(&proto::Knock { ticket })?;
+    text.push('\n');
+    send.write_all(text.as_bytes()).await?;
 
     let mut text = serde_json::to_string(ask)?;
     text.push('\n');

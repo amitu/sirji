@@ -14,7 +14,10 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 
 use crate::config::{HandshakeKey, Network, Peer};
-use crate::proto::{AddressInfo, Hello, Invite, PeerInfo, RelayInfo, Request, Response, Welcome};
+use crate::proto::{
+    AddressInfo, Ask, Hello, Invite, PeerInfo, RelayInfo, Request, Response, Say, Welcome,
+};
+use crate::ticket::Ticket;
 use crate::{Keystore, id52};
 
 pub const SOCKET: &str = "sirji.sock";
@@ -122,8 +125,13 @@ impl Daemon {
                     let daemon = daemon.clone();
                     let alias = alias.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = daemon.serve_peer(incoming, &alias).await {
-                            eprintln!("peer connection failed: {e:#}");
+                        match daemon.serve_peer(incoming, &alias).await {
+                            Ok(()) => {}
+                            // A peer that got what it came for and hung up is not
+                            // a failure, and logging it as one trains the operator
+                            // to ignore the log.
+                            Err(e) if is_clean_close(&e) => {}
+                            Err(e) => eprintln!("peer connection failed: {e:#}"),
                         }
                     });
                 }
@@ -169,11 +177,18 @@ impl Daemon {
             self.live.lock().await.insert(name.clone());
             println!("device {name} registered ({caller})");
 
-            // Hold it. When it drops — process gone, network gone, cable pulled —
-            // the device stops being live without anyone timing anything out.
-            conn.closed().await;
+            // The same connection carries requests. A device that only registers
+            // sends none and simply holds the stream open; when it drops — process
+            // gone, network gone, cable pulled — the device stops being live with
+            // nobody timing anything out.
+            let served = self
+                .serve_asks(&mut recv, &mut send, &Asker::Device(caller.clone()))
+                .await;
             self.live.lock().await.remove(&name);
             println!("device {name} gone");
+            if let Err(e) = served {
+                eprintln!("device {name}: {e:#}");
+            }
             return Ok(());
         }
 
@@ -181,6 +196,11 @@ impl Daemon {
         let mut text = serde_json::to_string(&welcome)?;
         text.push(crate::proto::NEWLINE as char);
         send.write_all(text.as_bytes()).await?;
+
+        if let Welcome::Ok { alias, .. } = &welcome {
+            let asker = Asker::Peer(alias.clone());
+            self.serve_asks(&mut recv, &mut send, &asker).await?;
+        }
         send.finish()?;
         conn.closed().await;
         Ok(())
@@ -263,6 +283,123 @@ impl Daemon {
                     addresses: net.current_addresses(),
                     dns: net.dns.clone(),
                 })
+            }
+        }
+    }
+
+    /// Read requests until the stream ends.
+    ///
+    /// Who is asking decides what they may ask for: a peer wants one of our
+    /// devices located, one of our own devices wants us to locate someone else's.
+    async fn serve_asks(
+        &self,
+        recv: &mut BufReader<iroh::endpoint::RecvStream>,
+        send: &mut iroh::endpoint::SendStream,
+        asker: &Asker,
+    ) -> Result<()> {
+        loop {
+            let mut line = String::new();
+            if recv.read_line(&mut line).await? == 0 {
+                return Ok(()); // the peer hung up: normal
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            let ask: Ask = match serde_json::from_str(line.trim()) {
+                Ok(ask) => ask,
+                Err(e) => {
+                    reply(send, &Say::No { reason: format!("unreadable: {e}") }).await?;
+                    continue;
+                }
+            };
+
+            let say = match self.answer(ask, asker).await {
+                Ok(say) => say,
+                Err(e) => Say::No { reason: format!("{e:#}") },
+            };
+            reply(send, &say).await?;
+        }
+    }
+
+    async fn answer(&self, ask: Ask, asker: &Asker) -> Result<Say> {
+        match ask {
+            // A peer asking us where one of our devices is.
+            Ask::Resolve { name, caller } => {
+                let Asker::Peer(asker_alias) = asker else {
+                    bail!("only a peer may ask us to locate our devices");
+                };
+                let (device_key, alias, hints) = {
+                    let net = self.net.lock().await;
+                    let Some(entry) = net.device_by_name(&name) else {
+                        bail!("we have no device called {name:?}");
+                    };
+                    let Some(key) = entry.keys.first().cloned() else {
+                        bail!("{name:?} has not enrolled yet");
+                    };
+                    // Only a live device is worth returning: handing back an
+                    // address nobody is listening on turns one clear failure into
+                    // a dial timeout.
+                    if !self.live.lock().await.contains(&name) {
+                        bail!("{name:?} is not connected");
+                    }
+                    // The ticket names *who asked*, not the key that will dial:
+                    // the caller is one of their devices, and what the serving
+                    // device needs to know is which person is behind it.
+                    (key, Some(asker_alias.clone()), Vec::new())
+                };
+
+                // Sign with the address they reached us on. The device knows its
+                // parent's handshake keys, so it can check the issuer is genuinely
+                // us rather than trusting whatever the caller presents.
+                let issuer = {
+                    let net = self.net.lock().await;
+                    let key = net
+                        .current_addresses()
+                        .first()
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("we have no current address to sign with"))?;
+                    self.keys.secret(&id52::decode(&key)?)?
+                };
+
+                id52::decode(&caller)?;
+                let ticket = Ticket::mint(
+                    &issuer,
+                    &name,
+                    &caller,
+                    alias,
+                    crate::ticket::LIFETIME_SECS,
+                );
+                println!("resolved {name} for {caller}");
+                Ok(Say::Resolved { device: device_key, ticket, hints })
+            }
+
+            // One of our own devices asking us to resolve a name at a peer. It
+            // holds no network.toml, so it cannot know who `alias` is; we do.
+            Ask::ResolveFor { name, alias } => {
+                let Asker::Device(caller) = asker else {
+                    bail!("only our own devices may ask us to resolve for them");
+                };
+                let peer = {
+                    let net = self.net.lock().await;
+                    net.peer_by_alias(&alias)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("we know nobody called {alias:?}"))?
+                };
+                let mine = self.keys.secret(&id52::decode(&peer.mine)?)?;
+
+                // Dial them as the identity they know us by, and ask on the
+                // device's behalf — the ticket must be bound to the key that will
+                // actually dial, which is the device's, not ours.
+                let endpoint = crate::endpoint::bind_dialer(mine).await?;
+                let result = ask_peer(
+                    &endpoint,
+                    &peer.addresses,
+                    &[],
+                    &Ask::Resolve { name, caller: caller.to_string() },
+                )
+                .await;
+                endpoint.close().await;
+                result
             }
         }
     }
@@ -521,6 +658,125 @@ impl Daemon {
     }
 }
 
+async fn reply(send: &mut iroh::endpoint::SendStream, say: &Say) -> Result<()> {
+    let mut text = serde_json::to_string(say)?;
+    text.push(crate::proto::NEWLINE as char);
+    send.write_all(text.as_bytes()).await?;
+    Ok(())
+}
+
+/// Dial a peer as an established relationship and ask them one thing.
+pub async fn ask_peer(
+    endpoint: &Endpoint,
+    addresses: &[String],
+    hints: &[String],
+    ask: &Ask,
+) -> Result<Say> {
+    let mut last = None;
+    for address in addresses {
+        let target = id52::decode(address)?;
+        let conn = match dial_with_hints(endpoint, target, hints).await {
+            Ok(conn) => Ok(conn),
+            Err(hint_err) => crate::dial(endpoint, target)
+                .await
+                .map_err(|discovery_err| hint_err.context(discovery_err)),
+        };
+        match conn {
+            Ok(conn) => {
+                let out = converse(&conn, &Hello::Peer, ask).await;
+                conn.close(0u32.into(), b"done");
+                match out {
+                    Ok(say) => return Ok(say),
+                    Err(e) => last = Some(e),
+                }
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("no addresses to try")))
+}
+
+/// Dial our parent as one of its devices and ask it one thing.
+///
+/// A device holds no `network.toml`, so anything requiring knowledge of who a peer
+/// is has to go through the parent. This is that channel.
+pub async fn ask_as_device(
+    endpoint: &Endpoint,
+    addresses: &[String],
+    hints: &[String],
+    ask: &Ask,
+) -> Result<Say> {
+    let mut last = None;
+    for address in addresses {
+        let target = id52::decode(address)?;
+        let conn = match dial_with_hints(endpoint, target, hints).await {
+            Ok(conn) => Ok(conn),
+            Err(hint_err) => crate::dial(endpoint, target)
+                .await
+                .map_err(|discovery_err| hint_err.context(discovery_err)),
+        };
+        match conn {
+            Ok(conn) => {
+                let out = converse(&conn, &Hello::Device, ask).await;
+                conn.close(0u32.into(), b"done");
+                match out {
+                    Ok(say) => return Ok(say),
+                    Err(e) => last = Some(e),
+                }
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("no parent addresses to try")))
+}
+
+/// Greet as a device, then keep the stream open until the connection ends.
+///
+/// The streams are held in scope for the whole wait, deliberately. Two ways to get
+/// this wrong, and both were: calling `finish()` on the send half, and simply
+/// letting it drop at the end of a helper — either closes the stream, and the
+/// parent reads end-of-stream as the device having departed. So a device would
+/// report its own disappearance the instant it arrived, forever.
+async fn hold(conn: &crate::Connection) -> Result<()> {
+    let (mut send, recv) = conn.open_bi().await?;
+    let mut recv = BufReader::new(recv);
+
+    send.write_all(format!("{}\n", serde_json::to_string(&Hello::Device)?).as_bytes())
+        .await?;
+
+    let mut line = String::new();
+    recv.read_line(&mut line).await?;
+    match serde_json::from_str(line.trim())? {
+        Welcome::Ok { alias, .. } => println!("registered with parent as `{alias}`"),
+        Welcome::No { reason } => bail!("the parent refused us: {reason}"),
+    }
+
+    conn.closed().await;
+    drop(send);
+    drop(recv);
+    Ok(())
+}
+
+/// Greet, then ask, on one connection.
+async fn converse(conn: &crate::Connection, hello: &Hello, ask: &Ask) -> Result<Say> {
+    let (mut send, recv) = conn.open_bi().await?;
+    let mut recv = BufReader::new(recv);
+
+    for line in [serde_json::to_string(hello)?, serde_json::to_string(ask)?] {
+        send.write_all(format!("{line}\n").as_bytes()).await?;
+    }
+
+    let mut greeting = String::new();
+    recv.read_line(&mut greeting).await?;
+    if let Welcome::No { reason } = serde_json::from_str(greeting.trim())? {
+        bail!("refused: {reason}");
+    }
+
+    let mut answer = String::new();
+    recv.read_line(&mut answer).await?;
+    Ok(serde_json::from_str(answer.trim())?)
+}
+
 /// The whole error, not just its outermost sentence.
 ///
 /// "Failed to connect to relay server" names a symptom; the cause is three
@@ -533,6 +789,20 @@ fn error_chain(error: &dyn std::error::Error) -> String {
         source = cause.source();
     }
     out
+}
+
+/// Did this connection simply end, rather than break?
+fn is_clean_close(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}");
+    text.contains("closed by peer") || text.contains("connection closed")
+}
+
+/// Who is on the other end of a connection we have already greeted.
+enum Asker {
+    /// Another person's sirji, known to us by this alias.
+    Peer(String),
+    /// One of our own devices, by its key.
+    Device(String),
 }
 
 /// Note which of our addresses a peer arrived on. This is what makes retiring an
@@ -635,15 +905,15 @@ pub async fn register_device(
         };
         match conn {
             Ok(conn) => {
-                match exchange(&conn, &Hello::Device).await {
-                    Ok(Welcome::Ok { alias, .. }) => {
-                        println!("registered with parent as `{alias}`");
-                        // Hold it open. This is the liveness signal.
-                        conn.closed().await;
+                // Deliberately not `exchange`: that finishes the send stream, and
+                // a finished stream is indistinguishable from a departed device.
+                // Registration has to leave it open, because the open stream *is*
+                // the registration.
+                match hold(&conn).await {
+                    Ok(()) => {
                         endpoint.close().await;
                         return Ok(());
                     }
-                    Ok(Welcome::No { reason }) => last = Some(anyhow::anyhow!("{reason}")),
                     Err(e) => last = Some(e),
                 }
             }
