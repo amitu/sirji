@@ -121,18 +121,14 @@ impl Daemon {
         relays
     }
 
-    /// Where we are reachable right now, as socket addresses.
-    ///
-    /// Sockets bind to the unspecified address, so the port is the real
-    /// information; loopback covers another instance on this machine, which is
-    /// the case discovery cannot help with anyway when it is unavailable.
-    fn hints(&self) -> Vec<String> {
-        self.bound
-            .iter()
-            .flat_map(|(_, endpoint)| crate::endpoint::reachable_at(endpoint))
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect()
+    /// Where we are reachable right now, as socket addresses, across every address
+    /// we listen on.
+    async fn hints(&self) -> Vec<String> {
+        let mut all = std::collections::BTreeSet::new();
+        for (_, endpoint) in &self.bound {
+            all.extend(crate::endpoint::reachable_at(endpoint).await);
+        }
+        all.into_iter().collect()
     }
 
     /// Accept peers on every bound key, and CLI commands on the socket, until
@@ -575,7 +571,7 @@ impl Daemon {
                         addresses: net.current_addresses(),
                         dns: net.dns.clone(),
                         identity: mine,
-                        hints: self.hints(),
+                        hints: self.hints().await,
                     },
                 })
             }
@@ -599,7 +595,7 @@ impl Daemon {
                         addresses: net.current_addresses(),
                         dns: net.dns.clone(),
                         identity: invite,
-                        hints: self.hints(),
+                        hints: self.hints().await,
                     },
                 })
             }
@@ -648,7 +644,7 @@ impl Daemon {
             invited_to: invite.identity.clone(),
             addresses: our_addresses,
             dns: our_dns,
-            hints: self.hints(),
+            hints: self.hints().await,
         };
 
         // Dial from the identity we just minted: this is what they will recognise

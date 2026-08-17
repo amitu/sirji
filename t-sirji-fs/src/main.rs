@@ -188,7 +188,7 @@ async fn serve() -> Result<()> {
 
     // Registering is holding a connection open: while it is up we are live, and
     // when it drops we are not. No heartbeat, no timeout to tune.
-    let listening = sirji::endpoint::reachable_at(&endpoint);
+    let listening = sirji::endpoint::reachable_at(&endpoint).await;
     let registration = tokio::spawn(register(config.clone(), home.clone(), listening));
 
     let config = std::sync::Arc::new(config);

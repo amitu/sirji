@@ -292,26 +292,62 @@ pub async fn dial_hints(
     }
 }
 
+/// How long to wait for iroh to work out where it is, before reporting anyway.
+///
+/// Interface discovery is asynchronous, so an endpoint has no direct addresses for
+/// the first moments of its life. Reading them immediately after `bind` — which is
+/// exactly when a device wants to say where it listens — returned an empty list,
+/// and the machine then advertised nothing and could not be reached.
+const ADDRESS_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Where this endpoint can currently be reached, as socket addresses.
 ///
-/// iroh's own view of its direct addresses: real interface addresses, which is what
-/// makes a hint useful to a peer on another machine.
+/// Two sources, both wanted. iroh's own **direct addresses** are real interface
+/// addresses, which is what makes a hint useful to a machine across the room.
+/// **Loopback** is added per address family, because two processes on one host is
+/// both the first thing anyone tries and a case where a LAN address may be filtered
+/// while `127.0.0.1` is never in doubt.
 ///
-/// The obvious shortcut — take each bound socket's port and pair it with
-/// `127.0.0.1` — is wrong twice. It is unreachable from anywhere else, and on the
-/// usual dual-stack bind the IPv6 socket contributes a *second, different* port,
-/// so half the hints name an IPv4 loopback port nothing listens on. Dialling one of
-/// those does not fail: it stalls, and pairing that had worked began hanging.
-pub fn reachable_at(endpoint: &Endpoint) -> Vec<String> {
-    endpoint
-        .addr()
-        .addrs
-        .into_iter()
-        .filter_map(|addr| match addr {
-            iroh::TransportAddr::Ip(socket) => Some(socket.to_string()),
-            // A relay URL is not somewhere we can be dialled directly, and it is
-            // already discoverable by key. Hints are the direct path only.
-            _ => None,
-        })
-        .collect()
+/// What this must not do is invent an address. Taking each bound socket's port and
+/// pairing it with `127.0.0.1` regardless of family is wrong: the usual dual-stack
+/// bind gives the IPv6 socket a *different* port, so half the hints named an IPv4
+/// loopback port nothing listens on. Dialling one of those does not fail, it
+/// stalls. Hence the per-family split below rather than one blanket guess.
+pub async fn reachable_at(endpoint: &Endpoint) -> Vec<String> {
+    // Give interface discovery a moment, but never block on it: an endpoint with
+    // no route to the world still has loopback, and saying so beats saying nothing.
+    let direct = tokio::time::timeout(ADDRESS_PATIENCE, async {
+        loop {
+            let addrs: Vec<String> = endpoint
+                .addr()
+                .addrs
+                .into_iter()
+                .filter_map(|addr| match addr {
+                    iroh::TransportAddr::Ip(socket) => Some(socket.to_string()),
+                    // A relay URL is not somewhere we can be dialled directly, and
+                    // it is already discoverable by key. Hints are the direct path.
+                    _ => None,
+                })
+                .collect();
+            if !addrs.is_empty() {
+                return addrs;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_default();
+
+    let loopback = endpoint.bound_sockets().into_iter().map(|socket| {
+        if socket.is_ipv4() {
+            format!("127.0.0.1:{}", socket.port())
+        } else {
+            format!("[::1]:{}", socket.port())
+        }
+    });
+
+    let mut all: Vec<String> = direct.into_iter().chain(loopback).collect();
+    all.sort();
+    all.dedup();
+    all
 }
