@@ -25,6 +25,9 @@ sirji — peer-to-peer network substrate
   sirji peers                   every relationship, pending or established
   sirji device invite <name>    mint an enrolment invite for a device
   sirji devices                 our own fleet, and which are connected
+  sirji doctor                  why isn't this working? checks home, keys, DNS,
+                                UDP egress and every relay, and says what each
+                                failure means. Needs no daemon.
   sirji net check               validate network.toml without a daemon
   sirji key ls                  list the keystore, verifying every entry
 
@@ -44,6 +47,7 @@ fn main() -> Result<()> {
         ["init"] => init(),
         ["daemon"] => daemon_run(),
         ["key", "ls"] => key_ls(),
+        ["doctor"] => doctor(),
         ["net", "check"] => net_check(),
         ["status"] => ask(Request::Status),
         ["peers"] => ask(Request::Peers),
@@ -102,6 +106,20 @@ fn key_ls() -> Result<()> {
         println!("{}", id52::encode(key));
     }
     eprintln!("{} key(s), all verified", keys.len());
+    Ok(())
+}
+
+/// The one command that does its own networking.
+///
+/// Everything else asks the daemon, but the daemon not running is one of the things
+/// this has to be able to diagnose — so it talks to the network directly, and says
+/// so rather than quietly making an exception.
+fn doctor() -> Result<()> {
+    let home = sirji::keystore::home()?;
+    let healthy = tokio::runtime::Runtime::new()?.block_on(sirji::doctor::run(&home))?;
+    if !healthy {
+        std::process::exit(1);
+    }
     Ok(())
 }
 

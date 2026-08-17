@@ -13,6 +13,7 @@
 
 pub mod config;
 pub mod daemon;
+pub mod doctor;
 pub mod endpoint;
 pub mod id52;
 pub mod keystore;

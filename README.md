@@ -33,6 +33,41 @@ social/chat application on top of it is deliberately not designed yet.
   need your own. Deploying one is iroh's business, not ours.
 - **[road-ahead.md](road-ahead.md)** — beyond v1; vision, not scope.
 
+## When it doesn't work
+
+```
+$ sirji doctor
+sirji doctor — /Users/dana/.sirji
+  ok    home           1 address(es), 1 peer(s), 4 device(s)
+  ok    keys           1 private key(s), all readable
+  ok    daemon         running
+  ok    dns            resolved dns.iroh.link, stun.l.google.com
+  ok    udp egress     stun.l.google.com:19302 answered in 11ms
+  FAIL  relay          https://aps1-1.relay.n0.iroh.link/ — tls connection failed:
+                       invalid peer certificate: “FG1A0B2C3D4E5F67” is not trusted
+                       → TLS was intercepted and the interceptor's CA is not
+                         trusted here. Add it to the system store, or point
+                         SIRJI_EXTRA_CA at the PEM.
+
+1 problem above. UDP works, so this is fixable:
+a relay you run — on a domain your network already trusts — is
+usually the whole answer. Set SIRJI_RELAY to it.
+```
+
+Those two lines are the reason the command exists. **UDP got out in 11ms and every
+relay hostname was blocked** — opposite conclusions, with opposite responses. One
+says the network cannot carry QUIC at all; the other says the packets are fine and
+only the coordination is filtered, so move it somewhere the filter has not
+categorised. Nothing in a connection timeout tells you which you are looking at, and
+working it out by hand takes an afternoon.
+
+(The certificate above is named after a filtering appliance's serial number. That is
+what interception looks like from the inside, and printing the whole error chain
+rather than "failed to connect" is what makes it visible.)
+
+`sirji doctor` needs no daemon — the moment you most want a diagnosis is when
+nothing is running.
+
 ## License
 
 Licensed under either of [MIT](LICENSE-MIT) or
